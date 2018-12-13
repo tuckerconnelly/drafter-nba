@@ -1,0 +1,191 @@
+const _ = require('lodash/fp');
+const chrono = require('chrono-node');
+
+const _a = require('./lib/lodash-a');
+const { html, cheerioText } = require('./helpers');
+const { wsq } = require('./services');
+
+const MAX_SEASON = 2019;
+const MIN_SEASON = 2018;
+// const MIN_SEASON = 2003;
+
+const _scrapeTeamSeason = _a.pipe([
+  _.tap(console.log),
+  html,
+  _.tap(
+    _.pipe([
+      $ => $('.prevnext a:first-of-type'),
+      _.get('0.attribs.href'),
+      _.cond([
+        [
+          _.pipe([
+            _.split('/'),
+            _.get(3),
+            it => parseInt(it),
+            _.lte(MIN_SEASON)
+          ]),
+          path =>
+            _scrapeTeamSeason(`https://www.basketball-reference.com${path}`)
+        ],
+        [_.stubTrue, it => console.warn(`Not scraping next url: ${it}`)]
+      ])
+    ])
+  ),
+  $ =>
+    _a.pipe([
+      _a.tap(
+        _a.pipe([
+          _a.applyValues({
+            name: _.pipe([
+              $ => $('#meta [itemprop="name"] span'),
+              _.get(1),
+              cheerioText,
+              _.trim
+            ]),
+            basketballReferenceId: _.pipe([
+              $ => $('[rel="canonical"]'),
+              _.get('0.attribs.href'),
+              _.split('/'),
+              _.get(4)
+            ])
+          }),
+          async team => {
+            const existingTeam = await wsq.from`teams`
+              .where(_.pick('basketballReferenceId', team))
+              .one();
+
+            if (existingTeam) return existingTeam;
+
+            return await wsq.from`teams`.insert(team).return`*`.one();
+          }
+        ])
+      ),
+      $ => $('#roster tr'),
+      _.slice(1, Infinity),
+      _.map('children'),
+      _a.mapSequential(
+        _a.pipe([
+          _a.applyValues({
+            season: _.constant(
+              _.pipe([
+                $ => $('#meta [itemprop="name"] span:first-of-type'),
+                _.get(0),
+                cheerioText,
+                it => parseInt(it),
+                it => it + 1
+              ])($)
+            ),
+            teamBasketballReferenceId: _.constant(
+              _.pipe([
+                $ => $('[rel="canonical"]'),
+                _.get('0.attribs.href'),
+                _.split('/'),
+                _.get(4)
+              ])($)
+            ),
+            playerNumber: _.pipe([_.get(0), cheerioText, _.toInteger]),
+            name: _.pipe([
+              _.get(1),
+              cheerioText,
+              _.split('(TW)'),
+              _.get(0),
+              _.trim
+            ]),
+            playerBasketballReferenceId: _.pipe([
+              _.get('1.children.0.attribs.href'),
+              _.split('/'),
+              _.get(3),
+              _.split('.html'),
+              _.get(0)
+            ]),
+            position: _.pipe([_.get('2'), cheerioText, _.trim]),
+            heightInches: _.pipe([
+              _.get('3'),
+              cheerioText,
+              _.split('-'),
+              _.map(_.toInteger),
+              ([feet, inches]) => feet * 12 + inches
+            ]),
+            weightLbs: _.pipe([_.get('4'), cheerioText, _.toInteger]),
+            dateOfBirth: _.pipe([_.get('5'), cheerioText, chrono.parseDate]),
+            birthCountry: _.pipe([_.get('6'), cheerioText]),
+            experience: _.pipe([_.get('7'), cheerioText, _.toInteger])
+          }),
+          async teamPlayer => {
+            let inDbPlayer = await wsq.from`players`
+              .where({
+                basketballReferenceId: teamPlayer.playerBasketballReferenceId
+              })
+              .one();
+
+            if (!inDbPlayer) {
+              inDbPlayer = await wsq.from`players`.insert({
+                basketballReferenceId: teamPlayer.playerBasketballReferenceId,
+                ..._.pick(['name', 'dateOfBirth', 'birthCountry'], teamPlayer)
+              }).return`*`.one();
+            }
+
+            let inDbTeamPlayer = await wsq.from`teams_players`
+              .where(
+                _.pick(
+                  [
+                    'playerBasketballReferenceId',
+                    'teamBasketballReferenceId',
+                    'season'
+                  ],
+                  teamPlayer
+                )
+              )
+              .one();
+
+            if (!inDbTeamPlayer) {
+              inDbTeamPlayer = await wsq.from`teams_players`.insert(
+                _.pick(
+                  [
+                    'playerBasketballReferenceId',
+                    'teamBasketballReferenceId',
+                    'season',
+                    'playerNumber',
+                    'position',
+                    'heightInches',
+                    'weightLbs',
+                    'experience'
+                  ],
+                  teamPlayer
+                )
+              ).return`*`.one();
+            }
+
+            return inDbTeamPlayer;
+          }
+        ])
+      )
+    ])($)
+]);
+
+_a.pipe([
+  _a.tap(
+    async () =>
+      await wsq.l`
+        delete from teams_players;
+        alter sequence teams_players_id_seq RESTART WITH 1;
+
+        delete from teams;
+        alter sequence teams_id_seq RESTART WITH 1;
+
+        delete from players;
+        alter sequence players_id_seq RESTART WITH 1;
+      `
+  ),
+  html,
+  $ => $('#teams_active a'),
+  _.map('attribs.href'),
+  _.map(it => `https://www.basketball-reference.com${it}${MAX_SEASON}.html`),
+
+  // DEBUG
+  _.slice(0, 1),
+
+  _a.mapSequential(_scrapeTeamSeason),
+
+  _.tap(it => console.dir(it, { depth: 4 }))
+])('https://www.basketball-reference.com/teams/');

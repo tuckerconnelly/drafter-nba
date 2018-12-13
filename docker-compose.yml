@@ -1,0 +1,10 @@
+version: '3'
+services:
+  postgres:
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: drafter_nba
+    image: postgres:10-alpine
+    ports:
+      - 5432:5432
