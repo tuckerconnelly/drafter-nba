@@ -68,9 +68,12 @@ create table games (
   created_at timestamp not null default now(),
   updated_at timestamp not null default now(),
 
+  season int,
   basketball_reference_id text unique,
   home_team_basketball_reference_id text references teams(basketball_reference_id),
   away_team_basketball_reference_id text references teams(basketball_reference_id),
+  home_score int,
+  away_score int,
   arena text,
   time_of_game timestamp without time zone
 );
@@ -78,7 +81,7 @@ create table games (
 create trigger update_updated_at before update
   on games for each row execute procedure update_updated_at();
 
-create table players_games (
+create table games_players (
   id serial not null primary key,
   created_at timestamp not null default now(),
   updated_at timestamp not null default now(),
@@ -86,30 +89,31 @@ create table players_games (
   player_basketball_reference_id text references players(basketball_reference_id),
   game_basketball_reference_id text references games(basketball_reference_id),
 
+  starter boolean,
   seconds_played int,
   field_goals int,
   field_goals_attempted int,
-  three_pointers int,
-  three_pointers_attempted int,
-  free_thows int,
+  three_point_field_goals int,
+  three_point_field_goals_attempted int,
+  free_throws int,
   free_throws_attempted int,
   offensive_rebounds int,
   defensive_rebounds int,
+  total_rebounds int,
   assists int,
   steals int,
   blocks int,
   turnovers int,
   personal_fouls int,
-  points int,
-  inactive_for_game boolean
+  points int
 );
 
 create trigger update_updated_at before update
-  on players_games for each row execute procedure update_updated_at();
+  on games_players for each row execute procedure update_updated_at();
 
 -- rambler down
 
-drop table players_games;
+drop table games_players;
 drop table games;
 drop table teams_players;
 drop table players;
