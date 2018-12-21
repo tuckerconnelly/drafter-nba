@@ -66,16 +66,16 @@ const scrapeGamesPlayers = gameBasketballReferenceId => trSelector => $ => {
 };
 
 _a.pipe([
-  _a.tap(
-    async () =>
-      await wsq.l`
-        delete from games_players;
-        alter sequence games_players_id_seq RESTART WITH 1;
-
-        delete from games;
-        alter sequence games_id_seq RESTART WITH 1;
-      `
-  ),
+  // _a.tap(
+  //   async () =>
+  //     await wsq.l`
+  //       delete from games_players;
+  //       alter sequence games_players_id_seq RESTART WITH 1;
+  //
+  //       delete from games;
+  //       alter sequence games_id_seq RESTART WITH 1;
+  //     `
+  // ),
 
   _.flatMap(year =>
     _.flatMap(
@@ -85,19 +85,21 @@ _a.pipe([
             `https://www.basketball-reference.com/boxscores/?month=${month}&day=${day}&year=${year}`,
           _.range(1, 31)
         ),
-      _.range(1, 12)
+      // NOTE Start 2002 at month 8, the beginning of the 2003 season
+      _.range(year === 2002 ? 12 : 12, 13)
     )
   ),
 
-  // DEBUG
-  _.slice(0, 1),
+  // // DEBUG
+  // _.slice(0, 1),
 
   _a.mapSequential(
     _a.pipe([
+      _.tap(console.log),
       html,
       $ => $('.game_summary .gamelink a'),
       _.map('attribs.href'),
-      _a.mapSequential(
+      _a.mapParallel(
         _a.pipe([
           _.split('/'),
           _.get(2),
@@ -110,13 +112,13 @@ _a.pipe([
               html,
               _a.applyValues({
                 basketballReferenceId: _.constant(id),
-                awayTeamBasketbalReferenceId: _.pipe([
+                awayTeamBasketballReferenceId: _.pipe([
                   $ => $('.scorebox div:first-of-type [itemprop="name"]'),
                   _.get('0.attribs.href'),
                   _.split('/'),
                   _.get(2)
                 ]),
-                homeTeamBasketbalReferenceId: _.pipe([
+                homeTeamBasketballReferenceId: _.pipe([
                   $ => $('.scorebox div:nth-of-type(2) [itemprop="name"]'),
                   _.get('0.attribs.href'),
                   _.split('/'),
@@ -155,42 +157,60 @@ _a.pipe([
               })
             ])(id),
           async scrapedGame => {
-            const toDbGame = {
-              ..._.pick(
-                [
-                  'basketballReferenceId',
-                  'homeTeamBasketballReferenceId',
-                  'awayTeamBasketballReferenceId',
-                  'homeScore',
-                  'awayScore',
-                  'arena',
-                  'timeOfGame'
-                ],
-                scrapedGame
-              ),
-              season:
-                moment(scrapedGame.timeOfGame).month() > 9
-                  ? moment(scrapedGame.timeOfGame).year() + 1
-                  : moment(scrapedGame.timeOfGame).year()
-            };
+            let game = await wsq.from`games`
+              .where(_.pick('basketballReferenceId', scrapedGame))
+              .one();
 
-            const game = await wsq.from`games`.insert(toDbGame).return`*`.one();
-            const awayGamesPlayers = await _a.mapSequential(async gp => {
-              return await wsq.from`games_players`.insert(gp).return`*`.one();
-            })(scrapedGame.awayGamesPlayers);
-            const homeGamesPlayers = await _a.mapSequential(async gp => {
-              return await wsq.from`games_players`.insert(gp).return`*`.one();
-            })(scrapedGame.homeGamesPlayers);
+            if (!game) {
+              game = await wsq.from`games`.insert({
+                ..._.pick(
+                  [
+                    'basketballReferenceId',
+                    'homeTeamBasketballReferenceId',
+                    'awayTeamBasketballReferenceId',
+                    'homeScore',
+                    'awayScore',
+                    'arena',
+                    'timeOfGame'
+                  ],
+                  scrapedGame
+                ),
+                season:
+                  moment(scrapedGame.timeOfGame).month() > 9
+                    ? moment(scrapedGame.timeOfGame).year() + 1
+                    : moment(scrapedGame.timeOfGame).year()
+              }).return`*`.one();
+            }
 
-            return { game, awayGamesPlayers, homeGamesPlayers };
+            const gamesPlayers = await _a.mapSequential(async gp => {
+              const inDbGp = await wsq.from`games_players`
+                .where(
+                  _.pick(
+                    [
+                      'gameBasketballReferenceId',
+                      'playerBasketballReferenceId'
+                    ],
+                    gp
+                  )
+                )
+                .one();
+
+              if (inDbGp) return inDbGp;
+
+              return await wsq.from`games_players`.insert(gp).return`*`.one();
+            })([
+              ...scrapedGame.awayGamesPlayers,
+              ...scrapedGame.homeGamesPlayers
+            ]);
+
+            return { game, gamesPlayers };
           }
         ])
       )
     ])
-  ),
+  )
 
-  // DEBUG
-  _.tap(it => console.dir(it, { depth: 6 }))
-
-  // ])(_.range(2002, 2019));
-])(_.range(2018, 2019));
+  // // DEBUG
+  // _.tap(it => console.dir(it, { depth: 6 }))
+])(_.range(2013, 2019));
+// ])(_.range(2018, 2019));

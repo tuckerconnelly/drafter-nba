@@ -5,32 +5,12 @@ const _a = require('./lib/lodash-a');
 const { html, cheerioText } = require('./helpers');
 const { wsq } = require('./services');
 
-const MAX_SEASON = 2019;
-const MIN_SEASON = 2018;
-// const MIN_SEASON = 2003;
+// const MIN_SEASON = 2018;
+const MIN_SEASON = 2003;
 
 const _scrapeTeamSeason = _a.pipe([
   _.tap(console.log),
   html,
-  _.tap(
-    _.pipe([
-      $ => $('.prevnext a:first-of-type'),
-      _.get('0.attribs.href'),
-      _.cond([
-        [
-          _.pipe([
-            _.split('/'),
-            _.get(3),
-            it => parseInt(it),
-            _.lte(MIN_SEASON)
-          ]),
-          path =>
-            _scrapeTeamSeason(`https://www.basketball-reference.com${path}`)
-        ],
-        [_.stubTrue, it => console.warn(`Not scraping next url: ${it}`)]
-      ])
-    ])
-  ),
   $ =>
     _a.pipe([
       _a.tap(
@@ -180,10 +160,20 @@ _a.pipe([
   html,
   $ => $('#teams_active a'),
   _.map('attribs.href'),
-  _.map(it => `https://www.basketball-reference.com${it}${MAX_SEASON}.html`),
-
-  // DEBUG
-  _.slice(0, 1),
+  _.map(it => `https://www.basketball-reference.com${it}`),
+  _.tap(console.log),
+  _a.mapSequential(
+    _a.pipe([
+      html,
+      $ => $('[data-stat="season"] a'),
+      _.map('attribs.href'),
+      _.filter(
+        _.pipe([_.split('/'), _.get(3), it => parseInt(it), _.lte(MIN_SEASON)])
+      ),
+      _.map(it => `https://www.basketball-reference.com${it}`),
+      _a.mapSequential(_scrapeTeamSeason)
+    ])
+  ),
 
   _a.mapSequential(_scrapeTeamSeason),
 
