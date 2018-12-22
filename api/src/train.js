@@ -1,6 +1,7 @@
 require('@tensorflow/tfjs-node');
 const tf = require('@tensorflow/tfjs');
 const _ = require('lodash/fp');
+const shuffleSeed = require('shuffle-seed');
 
 const { wsq } = require('./services');
 
@@ -45,7 +46,8 @@ async function _getData() {
     	and tp.season = g.season
     inner join teams t
     	on t.basketball_reference_id = tp.team_basketball_reference_id
-    limit 4
+    order by gp.id asc
+    limit 1000
   `;
 }
 
@@ -164,23 +166,9 @@ async function _getPositions() {
   );
 }
 
-function makeOneHotEncoders(values) {
-  const keyedValues = _.reduce(
-    (prev, curr) => ({
-      ...prev,
-      [curr]: 0
-    }),
-    {},
-    _.filter(_.identity, values)
-  );
+function makeOneHotEncoders(possibleValues) {
   return {
-    encode: value => {
-      const encoded = _.cloneDeep(keyedValues);
-      if (!value) return encoded;
-
-      encoded[value] = 1;
-      return encoded;
-    }
+    encode: value => possibleValues.map(pv => (pv === value ? 1 : 0))
   };
 }
 
@@ -202,29 +190,20 @@ const makeEncoders = function makeEncoders(average, min, max) {
   };
 };
 
+function testTrainSplit(X, y, { testSize = 0.25, randomState = 0 } = {}) {
+  const i = Math.floor(X.length * (1 - testSize));
+
+  const shuffledX = shuffleSeed.shuffle(X, randomState);
+  const shuffledY = shuffleSeed.shuffle(y, randomState);
+  return [
+    shuffledX.slice(0, i),
+    shuffledX.slice(i),
+    shuffledY.slice(0, i),
+    shuffledY.slice(i)
+  ];
+}
+
 (async () => {
-  const model = tf.sequential();
-
-  model.add(
-    tf.layers.dense({
-      units: 128,
-      activation: 'relu',
-      batchInputShape: [null, 50]
-    })
-  );
-  model.add(tf.layers.dropout({ rate: 0.5 }));
-  model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
-  model.add(tf.layers.dropout({ rate: 0.5 }));
-  model.add(tf.layers.dense({ units: 10, activation: 'linear' }));
-
-  model.compile({
-    optimizer: 'rmsprop',
-    loss: 'meanSquaredError',
-    metrics: ['accuracy', 'mae', 'mse']
-  });
-
-  // model.summary();
-
   const teams = makeOneHotEncoders(await _getTeams());
 
   const players = makeOneHotEncoders(await _getPlayers());
@@ -319,47 +298,121 @@ const makeEncoders = function makeEncoders(average, min, max) {
     stats.turnoversMax
   );
 
-  const keyWith = prefix => _.mapKeys(k => `${prefix}_${_.camelCase(k)}`);
+  console.time('Fetching data');
+  const data = await _getData();
+  console.timeEnd('Fetching data');
 
-  const data = _.shuffle(await _getData());
-  const X = _.pipe(
-    _.map(d => ({
-      ...keyWith('player')(players.encode(d.playerBasketballReferenceId)),
-      ...keyWith('arena')(arenas.encode(d.arena)),
-      ...keyWith('birthCountry')(birthCountries.encode(d.birthCountry)),
-      ...keyWith('homeTeam')(teams.encode(d.homeTeamBasketballReferenceId)),
-      ...keyWith('awayTeam')(teams.encode(d.awayTeamBasketballReferenceId)),
-      ...keyWith('playerTeam')(teams.encode(d.playerTeamBasketballReferenceId)),
-      ...keyWith('position')(positions.encode(d.position)),
-      ageAtTimeOfGame: ageAtTimeOfGame.encode(d.ageAtTimeOfGame),
-      yearOfGame: yearOfGame.encode(d.yearOfGame),
-      monthOfGame: monthOfGame.encode(d.monthOfGame),
-      dayOfGame: dayOfGame.encode(d.dayOfGame),
-      hourOfGame: hourOfGame.encode(d.hourOfGame),
-      experience: experience.encode(d.experience),
-      heightInches: heightInches.encode(d.heightInches),
-      weightLbs: weightLbs.encode(d.weightLbs),
-      playingAtHome: d.playingAtHome ? 1 : 0
-    })),
-    _.map(_.values)
-  )(data);
+  console.time('Mapping X');
+  const X = _.map(
+    d => [
+      ...players.encode(d.playerBasketballReferenceId),
+      ...arenas.encode(d.arena),
+      ...birthCountries.encode(d.birthCountry),
+      ...teams.encode(d.homeTeamBasketballReferenceId),
+      ...teams.encode(d.awayTeamBasketballReferenceId),
+      ...teams.encode(d.playerTeamBasketballReferenceId),
+      ...positions.encode(d.position),
+      ageAtTimeOfGame.encode(d.ageAtTimeOfGame),
+      yearOfGame.encode(d.yearOfGame),
+      monthOfGame.encode(d.monthOfGame),
+      dayOfGame.encode(d.dayOfGame),
+      hourOfGame.encode(d.hourOfGame),
+      experience.encode(d.experience),
+      heightInches.encode(d.heightInches),
+      weightLbs.encode(d.weightLbs),
+      d.playingAtHome ? 1 : 0
+    ],
+    data
+  );
+  console.timeEnd('Mapping X');
 
-  const y = _.pipe(
-    _.map(d => ({
-      points: points.encode(d.points),
-      threePointFieldGoals: threePointFieldGoals.encode(d.threePointFieldGoals),
-      totalRebounds: totalRebounds.encode(d.totalRebounds),
-      assists: assists.encode(d.assists),
-      steals: steals.encode(d.steals),
-      blocks: blocks.encode(d.blocks),
-      turnovers: turnovers.encode(d.turnovers)
-    })),
-    _.map(_.values)
-  )(data);
+  console.time('Mapping y');
+  const y = _.map(
+    d => [
+      points.encode(d.points),
+      threePointFieldGoals.encode(d.threePointFieldGoals),
+      totalRebounds.encode(d.totalRebounds),
+      assists.encode(d.assists),
+      steals.encode(d.steals),
+      blocks.encode(d.blocks),
+      turnovers.encode(d.turnovers),
+      [
+        parseInt(d.points) >= 10,
+        parseInt(d.totalRebounds) >= 10,
+        parseInt(d.assists) >= 10,
+        parseInt(d.blocks) >= 10,
+        parseInt(d.steals) >= 10
+      ].filter(Boolean).length >= 2
+        ? 1
+        : 0,
+      [
+        parseInt(d.points) >= 10,
+        parseInt(d.totalRebounds) >= 10,
+        parseInt(d.assists) >= 10,
+        parseInt(d.blocks) >= 10,
+        parseInt(d.steals) >= 10
+      ].filter(Boolean).length >= 3
+        ? 1
+        : 0
+    ],
+    data
+  );
+  console.timeEnd('Mapping y');
 
-  console.log(X[2], y[2]);
+  console.time('Test train split');
+  const [trainX, testX, trainY, testY] = testTrainSplit(X, y);
+  console.timeEnd('Test train split');
 
-  // model.fit({
-  //
-  // });
+  console.log({
+    features: trainX[0].length,
+    labels: trainY[0].length,
+    trainX: trainX.length,
+    testX: testX.length,
+    trainY: trainY.length,
+    testY: testY.length
+  });
+
+  const BATCH_SIZE = 1000;
+  const EPOCHS = 100;
+  const VALIDATION_SPLIT = 0.15;
+
+  const model = tf.sequential();
+
+  model.add(
+    tf.layers.dense({
+      inputShape: trainX[0].length,
+      units: 64,
+      activation: 'relu'
+    })
+  );
+  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  // model.add(tf.layers.dense({ units: 512, activation: 'relu' }));
+  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  // model.add(tf.layers.dense({ units: 256, activation: 'relu' }));
+  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  // model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
+  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  // model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
+  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  model.add(tf.layers.dense({ units: testY[0].length, activation: 'linear' }));
+
+  model.compile({
+    optimizer: 'rmsprop',
+    loss: 'meanSquaredError',
+    metrics: ['accuracy']
+  });
+  model.summary();
+
+  await model.fit(tf.tensor2d(trainX), tf.tensor2d(trainY), {
+    epochs: EPOCHS,
+    batchSize: BATCH_SIZE,
+    validationSplit: VALIDATION_SPLIT
+  });
+
+  const evalOutput = model.evaluate(tf.tensor2d(testX), tf.tensor2d(testY));
+  console.log(
+    `\nEvaluation result:\n` +
+      `  Loss = ${evalOutput[0].dataSync()[0].toFixed(3)}; ` +
+      `Accuracy = ${evalOutput[1].dataSync()[0].toFixed(3)}`
+  );
 })();
