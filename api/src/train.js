@@ -46,8 +46,8 @@ async function _getData() {
     	and tp.season = g.season
     inner join teams t
     	on t.basketball_reference_id = tp.team_basketball_reference_id
-    order by gp.id asc
-    limit 1000
+    order by gp.id desc
+    limit 100000
   `;
 }
 
@@ -372,28 +372,23 @@ function testTrainSplit(X, y, { testSize = 0.25, randomState = 0 } = {}) {
     testY: testY.length
   });
 
-  const BATCH_SIZE = 1000;
-  const EPOCHS = 100;
-  const VALIDATION_SPLIT = 0.15;
+  const BATCH_SIZE = 5000;
+  const EPOCHS = 25;
+  const VALIDATION_SPLIT = 0.10;
 
   const model = tf.sequential();
 
-  model.add(
-    tf.layers.dense({
-      inputShape: trainX[0].length,
-      units: 64,
-      activation: 'relu'
-    })
-  );
-  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  model.add(tf.layers.inputLayer({ inputShape: trainX[0].length }));
   // model.add(tf.layers.dense({ units: 512, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  // model.add(tf.layers.dropout({ rate: 0.25 }));
   // model.add(tf.layers.dense({ units: 256, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  // model.add(tf.layers.dropout({ rate: 0.25 }));
   // model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.5 }));
-  // model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.5 }));
+  // model.add(tf.layers.dropout({ rate: 0.25 }));
+  model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
+  model.add(tf.layers.dropout({ rate: 0.2 }));
+  model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
+  model.add(tf.layers.dropout({ rate: 0.2 }));
   model.add(tf.layers.dense({ units: testY[0].length, activation: 'linear' }));
 
   model.compile({
