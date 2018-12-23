@@ -1,53 +1,30 @@
+const path = require('path');
+const fs = require('fs');
+
 require('@tensorflow/tfjs-node');
 const tf = require('@tensorflow/tfjs');
 const _ = require('lodash/fp');
-const shuffleSeed = require('shuffle-seed');
+const ProgressBar = require('progress');
 
 const { wsq } = require('./services');
 
-async function _getData() {
+const MODEL_SAVE_DIR = path.join(__dirname, '../../tmp');
+
+console.log({ MODEL_SAVE_DIR });
+
+if (!fs.existsSync(MODEL_SAVE_DIR)) fs.mkdirSync(MODEL_SAVE_DIR);
+
+async function _getTotalSamples() {
+  return parseInt(
+    (await wsq.l`select count(*) from training_data`.one()).count
+  );
+}
+
+async function _getData({ offset = 0, limit = 'all' } = {}) {
   return await wsq.l`
-    select
-    	gp.game_basketball_reference_id,
-    	p.name as player_name,
-    	t.name as team_name,
-
-      gp.player_basketball_reference_id, -- enum
-    	p.birth_country, -- enum
-    	floor(date_part('days', g.time_of_game - p.date_of_birth) / 365) as age_at_time_of_game,
-    	g.arena, -- enum
-    	date_part('year', g.time_of_game) as year_of_game,
-    	date_part('month', g.time_of_game) as month_of_game,
-    	date_part('day', g.time_of_game) as day_of_game,
-    	date_part('hour', g.time_of_game) as hour_of_game,
-    	g.home_team_basketball_reference_id, -- enum
-    	g.away_team_basketball_reference_id, -- enum
-    	tp.team_basketball_reference_id as player_team_basketball_reference_id, -- enum
-    	tp.experience,
-    	tp.height_inches,
-    	tp.weight_lbs,
-    	tp.position, -- enum
-    	(g.home_team_basketball_reference_id = t.basketball_reference_id) as playing_at_home,
-
-    	gp.points,
-    	gp.three_point_field_goals,
-    	gp.total_rebounds,
-    	gp.assists,
-    	gp.steals,
-    	gp.blocks,
-    	gp.turnovers
-    from games_players gp
-    inner join players p
-    	on p.basketball_reference_id = gp.player_basketball_reference_id
-    inner join games g
-    	on g.basketball_reference_id = gp.game_basketball_reference_id
-    inner join teams_players tp
-    	on tp.player_basketball_reference_id = gp.player_basketball_reference_id
-    	and tp.season = g.season
-    inner join teams t
-    	on t.basketball_reference_id = tp.team_basketball_reference_id
-    order by gp.id desc
-    limit 100000
+    select * from training_data
+    limit ${limit}
+    offset ${offset}
   `;
 }
 
@@ -114,7 +91,11 @@ async function _getStats() {
 
     	avg(gp.turnovers) as turnovers_avg,
     	min(gp.turnovers) as turnovers_min,
-    	max(gp.turnovers) as turnovers_max
+    	max(gp.turnovers) as turnovers_max,
+
+    	avg(gp.free_throws) as free_throws_avg,
+    	min(gp.free_throws) as free_throws_min,
+    	max(gp.free_throws) as free_throws_max
     from games_players gp
     inner join players p
     	on p.basketball_reference_id = gp.player_basketball_reference_id
@@ -190,20 +171,7 @@ const makeEncoders = function makeEncoders(average, min, max) {
   };
 };
 
-function testTrainSplit(X, y, { testSize = 0.25, randomState = 0 } = {}) {
-  const i = Math.floor(X.length * (1 - testSize));
-
-  const shuffledX = shuffleSeed.shuffle(X, randomState);
-  const shuffledY = shuffleSeed.shuffle(y, randomState);
-  return [
-    shuffledX.slice(0, i),
-    shuffledX.slice(i),
-    shuffledY.slice(0, i),
-    shuffledY.slice(i)
-  ];
-}
-
-(async () => {
+async function makeMapFunctions() {
   const teams = makeOneHotEncoders(await _getTeams());
 
   const players = makeOneHotEncoders(await _getPlayers());
@@ -298,87 +266,84 @@ function testTrainSplit(X, y, { testSize = 0.25, randomState = 0 } = {}) {
     stats.turnoversMax
   );
 
-  console.time('Fetching data');
-  const data = await _getData();
-  console.timeEnd('Fetching data');
-
-  console.time('Mapping X');
-  const X = _.map(
-    d => [
-      ...players.encode(d.playerBasketballReferenceId),
-      ...arenas.encode(d.arena),
-      ...birthCountries.encode(d.birthCountry),
-      ...teams.encode(d.homeTeamBasketballReferenceId),
-      ...teams.encode(d.awayTeamBasketballReferenceId),
-      ...teams.encode(d.playerTeamBasketballReferenceId),
-      ...positions.encode(d.position),
-      ageAtTimeOfGame.encode(d.ageAtTimeOfGame),
-      yearOfGame.encode(d.yearOfGame),
-      monthOfGame.encode(d.monthOfGame),
-      dayOfGame.encode(d.dayOfGame),
-      hourOfGame.encode(d.hourOfGame),
-      experience.encode(d.experience),
-      heightInches.encode(d.heightInches),
-      weightLbs.encode(d.weightLbs),
-      d.playingAtHome ? 1 : 0
-    ],
-    data
+  const freeThrows = makeEncoders(
+    stats.freeThrowsAvg,
+    stats.freeThrowsMin,
+    stats.freeThrowsMax
   );
-  console.timeEnd('Mapping X');
 
-  console.time('Mapping y');
-  const y = _.map(
-    d => [
-      points.encode(d.points),
-      threePointFieldGoals.encode(d.threePointFieldGoals),
-      totalRebounds.encode(d.totalRebounds),
-      assists.encode(d.assists),
-      steals.encode(d.steals),
-      blocks.encode(d.blocks),
-      turnovers.encode(d.turnovers),
-      [
-        parseInt(d.points) >= 10,
-        parseInt(d.totalRebounds) >= 10,
-        parseInt(d.assists) >= 10,
-        parseInt(d.blocks) >= 10,
-        parseInt(d.steals) >= 10
-      ].filter(Boolean).length >= 2
-        ? 1
-        : 0,
-      [
-        parseInt(d.points) >= 10,
-        parseInt(d.totalRebounds) >= 10,
-        parseInt(d.assists) >= 10,
-        parseInt(d.blocks) >= 10,
-        parseInt(d.steals) >= 10
-      ].filter(Boolean).length >= 3
-        ? 1
-        : 0
-    ],
-    data
-  );
-  console.timeEnd('Mapping y');
+  const mapDataToX = _.map(d => [
+    ...players.encode(d.playerBasketballReferenceId),
+    ...arenas.encode(d.arena),
+    ...birthCountries.encode(d.birthCountry),
+    ...teams.encode(d.homeTeamBasketballReferenceId),
+    ...teams.encode(d.awayTeamBasketballReferenceId),
+    ...teams.encode(d.playerTeamBasketballReferenceId),
+    ...positions.encode(d.position),
+    ageAtTimeOfGame.encode(d.ageAtTimeOfGame),
+    yearOfGame.encode(d.yearOfGame),
+    monthOfGame.encode(d.monthOfGame),
+    dayOfGame.encode(d.dayOfGame),
+    hourOfGame.encode(d.hourOfGame),
+    experience.encode(d.experience),
+    heightInches.encode(d.heightInches),
+    weightLbs.encode(d.weightLbs),
+    d.playingAtHome ? 1 : 0
+  ]);
 
-  console.time('Test train split');
-  const [trainX, testX, trainY, testY] = testTrainSplit(X, y);
-  console.timeEnd('Test train split');
+  const mapDataToY = _.map(d => [
+    points.encode(d.points),
+    threePointFieldGoals.encode(d.threePointFieldGoals),
+    totalRebounds.encode(d.totalRebounds),
+    assists.encode(d.assists),
+    steals.encode(d.steals),
+    blocks.encode(d.blocks),
+    turnovers.encode(d.turnovers),
+    freeThrows.encode(d.freeThrows)
+  ]);
+
+  const mapYToData = _.map(y => ({
+    points: points.decode(y.points),
+    threePointFieldGoals: threePointFieldGoals.decode(y.threePointFieldGoals),
+    totalRebounds: totalRebounds.decode(y.totalRebounds),
+    assists: assists.decode(y.assists),
+    steals: steals.decode(y.steals),
+    blocks: blocks.decode(y.blocks),
+    turnovers: turnovers.decode(y.turnovers),
+    freeThrows: freeThrows.decode(y.freeThrows)
+  }));
+
+  return { mapDataToX, mapDataToY, mapYToData };
+}
+
+async function train() {
+  const { mapDataToX, mapDataToY } = await makeMapFunctions();
+
+  const sampleSample = await _getData({ limit: 1 });
+  const sampleX = mapDataToX([sampleSample])[0];
+  const sampleY = mapDataToY([sampleSample])[0];
 
   console.log({
-    features: trainX[0].length,
-    labels: trainY[0].length,
-    trainX: trainX.length,
-    testX: testX.length,
-    trainY: trainY.length,
-    testY: testY.length
+    features: sampleX.length,
+    labels: sampleY.length
   });
 
-  const BATCH_SIZE = 5000;
+  const TOTAL_SAMPLES = (await _getTotalSamples()) * 0.1;
+  const TRAINING_SPLIT = 0.7;
+  const VALIDATION_SPLIT = 0.15;
+  const TEST_SPLIT = 0.15;
+  const BATCH_SIZE = 500;
+  const MODEL_SAVE_PATH = `${MODEL_SAVE_DIR}/model_${Date.now()}.json`;
+
+  const TRAINING_SAMPLES = Math.floor(TRAINING_SPLIT * TOTAL_SAMPLES);
+  const VALIDATION_SAMPLES = Math.floor(VALIDATION_SPLIT * TOTAL_SAMPLES);
+  const TEST_SAMPLES = Math.floor(TEST_SPLIT * TOTAL_SAMPLES);
   const EPOCHS = 25;
-  const VALIDATION_SPLIT = 0.10;
+  const NUM_BATCHES = Math.ceil(TRAINING_SAMPLES / BATCH_SIZE);
 
   const model = tf.sequential();
 
-  model.add(tf.layers.inputLayer({ inputShape: trainX[0].length }));
+  model.add(tf.layers.inputLayer({ inputShape: sampleX.length }));
   // model.add(tf.layers.dense({ units: 512, activation: 'relu' }));
   // model.add(tf.layers.dropout({ rate: 0.25 }));
   // model.add(tf.layers.dense({ units: 256, activation: 'relu' }));
@@ -387,9 +352,9 @@ function testTrainSplit(X, y, { testSize = 0.25, randomState = 0 } = {}) {
   // model.add(tf.layers.dropout({ rate: 0.25 }));
   model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
   model.add(tf.layers.dropout({ rate: 0.2 }));
-  model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
-  model.add(tf.layers.dropout({ rate: 0.2 }));
-  model.add(tf.layers.dense({ units: testY[0].length, activation: 'linear' }));
+  // model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
+  // model.add(tf.layers.dropout({ rate: 0.2 }));
+  model.add(tf.layers.dense({ units: sampleY.length, activation: 'linear' }));
 
   model.compile({
     optimizer: 'rmsprop',
@@ -398,16 +363,108 @@ function testTrainSplit(X, y, { testSize = 0.25, randomState = 0 } = {}) {
   });
   model.summary();
 
-  await model.fit(tf.tensor2d(trainX), tf.tensor2d(trainY), {
-    epochs: EPOCHS,
-    batchSize: BATCH_SIZE,
-    validationSplit: VALIDATION_SPLIT
+  console.log({ MODEL_SAVE_PATH });
+
+  for (let i = 0; i <= EPOCHS; i++) {
+    console.log('\n');
+    console.log({ epoch: i + 1, of: EPOCHS });
+
+    const bar = new ProgressBar('[ :bar ] :percent :etas loss::loss acc::acc', {
+      total: NUM_BATCHES + 1,
+      width: 40
+    });
+
+    for (let j = 0; j <= NUM_BATCHES; j++) {
+      const data = await _getData({
+        limit: BATCH_SIZE,
+        offset: j * BATCH_SIZE
+      });
+
+      const [loss, acc] = await model.trainOnBatch(
+        tf.tensor2d(mapDataToX(data)),
+        tf.tensor2d(mapDataToY(data))
+      );
+
+      bar.tick(1, {
+        loss: loss.toFixed(5),
+        acc: acc.toFixed(3)
+      });
+    }
+
+    const validationData = await _getData({
+      limit: VALIDATION_SAMPLES,
+      offset: TRAINING_SAMPLES
+    });
+
+    const [valLoss, valAcc] = await model.evaluate(
+      tf.tensor2d(mapDataToX(validationData)),
+      tf.tensor2d(mapDataToY(validationData)),
+      { batchSize: BATCH_SIZE }
+    );
+
+    console.log({
+      valLoss: parseFloat(valLoss.dataSync()[0].toFixed(5)),
+      valAcc: parseFloat(valAcc.dataSync()[0].toFixed(3))
+    });
+
+    fs.writeFileSync(
+      MODEL_SAVE_PATH,
+      JSON.stringify(model.toJSON(null, false))
+    );
+  }
+
+  const testData = await _getData({
+    limit: TRAINING_SAMPLES + VALIDATION_SAMPLES,
+    offset: TEST_SAMPLES
   });
 
-  const evalOutput = model.evaluate(tf.tensor2d(testX), tf.tensor2d(testY));
-  console.log(
-    `\nEvaluation result:\n` +
-      `  Loss = ${evalOutput[0].dataSync()[0].toFixed(3)}; ` +
-      `Accuracy = ${evalOutput[1].dataSync()[0].toFixed(3)}`
+  const [testLoss, testAcc] = await model.evaluate(
+    tf.tensor2d(mapDataToX(testData)),
+    tf.tensor2d(mapDataToY(testData)),
+    { batchSize: BATCH_SIZE }
   );
-})();
+
+  console.log({
+    valLoss: parseFloat(testLoss.dataSync()[0].toFixed(5)),
+    valAcc: parseFloat(testAcc.dataSync()[0].toFixed(3))
+  });
+}
+
+async function predict(batch) {
+  const { mapDataToX } = await makeMapFunctions();
+
+  const model = await tf.models.modelFromJSON(
+    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545529383943.json`, 'utf8')
+  );
+  const predictions = await model.predictOnBatch(
+    tf.tensor2d(mapDataToX(batch))
+  );
+  return predictions.dataSync();
+}
+
+// train();
+
+_getData({ limit: 1 })
+  .then(predict)
+  .then(console.log);
+
+// Double-double double-triple calculations
+
+// [
+//   parseInt(d.points) >= 10,
+//   parseInt(d.totalRebounds) >= 10,
+//   parseInt(d.assists) >= 10,
+//   parseInt(d.blocks) >= 10,
+//   parseInt(d.steals) >= 10
+// ].filter(Boolean).length >= 2
+//   ? 1
+//   : 0,
+// [
+//   parseInt(d.points) >= 10,
+//   parseInt(d.totalRebounds) >= 10,
+//   parseInt(d.assists) >= 10,
+//   parseInt(d.blocks) >= 10,
+//   parseInt(d.steals) >= 10
+// ].filter(Boolean).length >= 3
+//   ? 1
+//   : 0
