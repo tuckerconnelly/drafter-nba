@@ -303,14 +303,14 @@ async function makeMapFunctions() {
   ]);
 
   const mapYToData = _.map(y => ({
-    points: points.decode(y.points),
-    threePointFieldGoals: threePointFieldGoals.decode(y.threePointFieldGoals),
-    totalRebounds: totalRebounds.decode(y.totalRebounds),
-    assists: assists.decode(y.assists),
-    steals: steals.decode(y.steals),
-    blocks: blocks.decode(y.blocks),
-    turnovers: turnovers.decode(y.turnovers),
-    freeThrows: freeThrows.decode(y.freeThrows)
+    points: points.decode(y[0]),
+    threePointFieldGoals: threePointFieldGoals.decode(y[1]),
+    totalRebounds: totalRebounds.decode(y[2]),
+    assists: assists.decode(y[3]),
+    steals: steals.decode(y[4]),
+    blocks: blocks.decode(y[5]),
+    turnovers: turnovers.decode(y[6]),
+    freeThrows: freeThrows.decode(y[7])
   }));
 
   return { mapDataToX, mapDataToY, mapYToData };
@@ -328,7 +328,7 @@ async function train() {
     labels: sampleY.length
   });
 
-  const TOTAL_SAMPLES = (await _getTotalSamples()) * 0.1;
+  const TOTAL_SAMPLES = (await _getTotalSamples());
   const TRAINING_SPLIT = 0.7;
   const VALIDATION_SPLIT = 0.15;
   const TEST_SPLIT = 0.15;
@@ -344,16 +344,16 @@ async function train() {
   const model = tf.sequential();
 
   model.add(tf.layers.inputLayer({ inputShape: sampleX.length }));
-  // model.add(tf.layers.dense({ units: 512, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.25 }));
+  model.add(tf.layers.dense({ units: 512, activation: 'relu' }));
+  model.add(tf.layers.dropout({ rate: 0.25 }));
   // model.add(tf.layers.dense({ units: 256, activation: 'relu' }));
   // model.add(tf.layers.dropout({ rate: 0.25 }));
-  // model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.25 }));
-  model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
-  model.add(tf.layers.dropout({ rate: 0.2 }));
-  // model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
+  model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
+  model.add(tf.layers.dropout({ rate: 0.25 }));
+  // model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
   // model.add(tf.layers.dropout({ rate: 0.2 }));
+  model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
+  model.add(tf.layers.dropout({ rate: 0.2 }));
   model.add(tf.layers.dense({ units: sampleY.length, activation: 'linear' }));
 
   model.compile({
@@ -431,22 +431,39 @@ async function train() {
 }
 
 async function predict(batch) {
-  const { mapDataToX } = await makeMapFunctions();
+  const { mapDataToX, mapYToData } = await makeMapFunctions();
 
   const model = await tf.models.modelFromJSON(
-    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545529383943.json`, 'utf8')
+    JSON.parse(
+      fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545529682102.json`, 'utf8')
+    )
   );
   const predictions = await model.predictOnBatch(
     tf.tensor2d(mapDataToX(batch))
   );
-  return predictions.dataSync();
+
+  return _.pipe([
+    _.toArray,
+    _.chunk(predictions.shape[1]),
+    mapYToData,
+    data => {
+      const newData = [];
+      for (let i = 0; i < data.length; i++)
+        newData[i] = { ...batch[i], predictions: data[i] };
+      return newData;
+    }
+  ])(await predictions.data());
 }
 
-// train();
+train();
 
-_getData({ limit: 1 })
-  .then(predict)
-  .then(console.log);
+// _getData({ limit: 2 })
+//   .then(data => {
+//     console.log(data);
+//     return data;
+//   })
+//   .then(predict)
+//   .then(console.log);
 
 // Double-double double-triple calculations
 
