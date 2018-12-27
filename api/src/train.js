@@ -140,7 +140,6 @@ async function predict(model, batch) {
     _.toArray,
     _.chunk(predictions.shape[1]),
     _.map(yToDatum),
-    _.tap(console.log),
     data => {
       const newData = [];
       for (let i = 0; i < data.length; i++)
@@ -160,6 +159,7 @@ async function testPredictions(model) {
   console.time('mapData');
   let currentPlayerSeason = null;
   let pointsLastGames = [];
+  let secondsPlayedLastGames = [];
   for (let i in data) {
     if (
       currentPlayerSeason !==
@@ -169,11 +169,14 @@ async function testPredictions(model) {
         data[i].season
       }`;
       pointsLastGames = [];
+      secondsPlayedLastGames = [];
     }
 
     data[i].pointsLastGames = pointsLastGames;
+    data[i].secondsPlayedLastGames = secondsPlayedLastGames;
 
     pointsLastGames.unshift(data[i].points);
+    secondsPlayedLastGames.unshift(data[i].secondsPlayed);
   }
   console.timeEnd('mapData');
 
@@ -181,8 +184,6 @@ async function testPredictions(model) {
 
   console.log(JSON.stringify(res, null, 2));
 }
-
-// train().then(testPredictions);
 
 global.fetch = url => ({
   text: () => fs.readFileSync(url, 'utf8'),
@@ -193,9 +194,9 @@ global.fetch = url => ({
 async function loadModel() {
   console.time('Load model');
   const modelJson = JSON.parse(
-    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545877595864/model.json`, 'utf8')
+    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545902122227/model.json`, 'utf8')
   );
-  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545877595864/weights.bin`;
+  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545902122227/weights.bin`;
 
   const model = await tf.models.modelFromJSON(modelJson);
   console.timeEnd('Load model');
@@ -204,3 +205,5 @@ async function loadModel() {
 }
 
 exports.loadModel = loadModel;
+
+if (process.env.TASK === 'train') train().then(testPredictions);

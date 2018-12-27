@@ -66,17 +66,6 @@ const scrapeGamesPlayers = gameBasketballReferenceId => trSelector => $ => {
 };
 
 _a.pipe([
-  // _a.tap(
-  //   async () =>
-  //     await wsq.l`
-  //       delete from games_players;
-  //       alter sequence games_players_id_seq RESTART WITH 1;
-  //
-  //       delete from games;
-  //       alter sequence games_id_seq RESTART WITH 1;
-  //     `
-  // ),
-
   _.flatMap(year =>
     _.flatMap(
       month =>
@@ -86,7 +75,7 @@ _a.pipe([
           _.range(1, 31)
         ),
       // NOTE Start 2002 at month 8, the beginning of the 2003 season
-      _.range(year === 2002 ? 12 : 12, 13)
+      _.range(year === 2018 ? 12 : 12, 13)
     )
   ),
 
@@ -212,5 +201,5 @@ _a.pipe([
 
   // // DEBUG
   // _.tap(it => console.dir(it, { depth: 6 }))
-])(_.range(2013, 2019));
+])(_.range(2018, 2019));
 // ])(_.range(2018, 2019));

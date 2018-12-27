@@ -6,6 +6,7 @@ const _ = require('lodash/fp');
 const ProgressBar = require('progress');
 const chrono = require('chrono-node');
 const moment = require('moment');
+const Table = require('cli-table');
 
 const _a = require('./lib/lodash-a');
 const memoizeFs = require('./lib/memoize-fs');
@@ -32,7 +33,16 @@ const ABBREVIATIONS = {
   SAC: 'SAC',
   LAC: 'LAC',
   IND: 'IND',
-  ATL: 'ATL'
+  ATL: 'ATL',
+  BOS: 'BOS',
+  HOU: 'HOU',
+  POR: 'POR',
+  GS: 'GSW',
+  MIL: 'MIL',
+  NY: 'NYK',
+  LAL: 'LAL',
+  PHI: 'PHI',
+  UTA: 'UTA'
 };
 
 const parseSalaryFile = _a.pipe([
@@ -69,10 +79,11 @@ const parseSalaryFile = _a.pipe([
         playerTeamBasketballReferenceId: _.pipe([
           _.get(7),
           it => ABBREVIATIONS[it]
-        ])(line)
+        ])(line),
+        pointsPerGame: _.pipe([_.get(8), _.toInteger])(line)
       }),
       _.tap(it => {
-        if (_.values(_.filter(_.identity, it)).length === 8) return;
+        if (_.values(_.filter(it => it !== undefined, it)).length === 9) return;
 
         console.error({
           message: 'Invalid salary record',
@@ -110,31 +121,54 @@ const embellishSalaryData = memoizeFs(
       }
 
       const pointsLastGames = await wsq.l`
-      select gp.points
-      from games g
-      left join games_players gp
-        on gp.game_basketball_reference_id = g.basketball_reference_id
-        and gp.player_basketball_reference_id = ${
-          inDbPlayer.basketballReferenceId
-        }
-      where g.season = '2019'
-        and (
-          g.home_team_basketball_reference_id = ${
-            s.playerTeamBasketballReferenceId
+        select gp.points
+        from games g
+        left join games_players gp
+          on gp.game_basketball_reference_id = g.basketball_reference_id
+          and gp.player_basketball_reference_id = ${
+            inDbPlayer.basketballReferenceId
           }
-          or g.away_team_basketball_reference_id = ${
-            s.playerTeamBasketballReferenceId
+        where g.season = '2019'
+          and (
+            g.home_team_basketball_reference_id = ${
+              s.playerTeamBasketballReferenceId
+            }
+            or g.away_team_basketball_reference_id = ${
+              s.playerTeamBasketballReferenceId
+            }
+          )
+        order by g.time_of_game desc
+        limit 7
+      `;
+
+      const secondsPlayedLastGames = await wsq.l`
+        select gp.seconds_played
+        from games g
+        left join games_players gp
+          on gp.game_basketball_reference_id = g.basketball_reference_id
+          and gp.player_basketball_reference_id = ${
+            inDbPlayer.basketballReferenceId
           }
-        )
-      order by g.time_of_game desc
-      limit 7
-    `;
+        where g.season = '2019'
+          and (
+            g.home_team_basketball_reference_id = ${
+              s.playerTeamBasketballReferenceId
+            }
+            or g.away_team_basketball_reference_id = ${
+              s.playerTeamBasketballReferenceId
+            }
+          )
+        order by g.time_of_game desc
+        limit 7
+      `;
 
       bar.tick(1);
 
       return {
         name: s.name,
         salaryDollars: s.salaryDollars,
+        pointsPerGame: s.pointsPerGame,
+        rosterPositions: s.rosterPositions,
         playerBasketballReferenceId: inDbPlayer.basketballReferenceId,
         playerTeamBasketballReferenceId: s.playerTeamBasketballReferenceId,
         opposingTeamBasketballReferenceId:
@@ -153,6 +187,9 @@ const embellishSalaryData = memoizeFs(
         hourOfGame: moment(s.timeOfGame).hour(),
         experience: inDbPlayer.experience,
         pointsLastGames: pointsLastGames.map(it => it.points),
+        secondsPlayedLastGames: secondsPlayedLastGames.map(
+          it => it.secondsPlayed
+        ),
         playingAtHome:
           s.playerTeamBasketballReferenceId === s.homeTeamBasketballReferenceId
       };
@@ -160,15 +197,18 @@ const embellishSalaryData = memoizeFs(
   }
 );
 
+const predictWithModel = memoizeFs(
+  path.join(__dirname, '../../tmp/predictWithModel.json'),
+  async data => predict(await loadModel(), data)
+);
+
 parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
   // .then(async it => it.slice(0, 10))
   .then(embellishSalaryData)
-  .then(async data => predict(await loadModel(), data))
+  .then(predictWithModel)
   .then(
-    _.map(it => ({
-      name: it.name,
-      salaryDollars: it.salaryDollars,
-      _predictedFantasyScore:
+    _.map(it => {
+      const predictedFantasyScore =
         it._predictions.points +
         it._predictions.threePointFieldGoals * 0.5 +
         it._predictions.totalRebounds * 1.25 +
@@ -193,8 +233,40 @@ parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
           it._predictions.steals >= 10
         ].filter(Boolean).length >= 3
           ? 3
-          : 0)
+          : 0);
+      return {
+        name: it.name,
+        rosterPositions: it.rosterPositions,
+        salaryDollars: it.salaryDollars,
+        difference: Math.round(predictedFantasyScore - it.pointsPerGame),
+        pointsPerGame: it.pointsPerGame,
+        predictedFantasyScore: Math.round(predictedFantasyScore),
+        dollarsPerFantasyPoint: Math.round(
+          it.salaryDollars / predictedFantasyScore
+        )
+      };
+    })
+  )
+  .then(_.filter(it => it.pointsPerGame > 0))
+  // PG, SG, SF, PF, C, G, F, UTIL
+  // .then(_.filter(it => it.rosterPositions.includes('G')))
+  .then(_.sortBy(['dollarsPerFantasyPoint']))
+  .then(
+    _.map(it => ({
+      name: it.name,
+      pos: it.rosterPositions.join(','),
+      sal: it.salaryDollars,
+      diff: it.difference,
+      ppg: it.pointsPerGame,
+      pred: it.predictedFantasyScore,
+      dpfp: it.dollarsPerFantasyPoint
     }))
   )
-  .then(it => _.reverse(_.sortBy('_predictedFantasyScore', it)))
-  .then(console.log);
+  .then(data => {
+    const table = new Table({
+      head: _.keys(data[0]),
+      colWidths: [20, 14, 8, 6, 6, 6, 8]
+    });
+    table.push(...data.map(_.values));
+    console.log(table.toString());
+  });

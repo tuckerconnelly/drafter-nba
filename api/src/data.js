@@ -30,6 +30,7 @@ async function getDataFromPg({ limit = null, offset = 0 } = {}) {
       tp.experience,
       tp.position, -- enum
       (g.home_team_basketball_reference_id = t.basketball_reference_id) as playing_at_home,
+      gp.seconds_played,
 
       gp.points,
       gp.three_point_field_goals,
@@ -88,6 +89,10 @@ async function _getStats() {
     	avg(tp.experience) as experience_avg,
     	min(tp.experience) as experience_min,
     	max(tp.experience) as experience_max,
+
+    	avg(gp.seconds_played) as seconds_played_avg,
+    	min(gp.seconds_played) as seconds_played_min,
+    	max(gp.seconds_played) as seconds_played_max,
 
 
 
@@ -238,6 +243,11 @@ exports.makeMapFunctions = async function makeMapFunctions() {
     stats.experienceMin,
     stats.experienceMax
   );
+  const secondsPlayed = makeEncoders(
+    stats.secondsPlayedAvg,
+    stats.secondsPlayedMin,
+    stats.secondsPlayedMax
+  );
 
   const points = makeEncoders(
     stats.pointsAvg,
@@ -287,23 +297,39 @@ exports.makeMapFunctions = async function makeMapFunctions() {
     stats.freeThrowsMax
   );
 
-  const plgEncode = plg => (plg || plg === 0 ? points.encode(plg) : 0);
+  const plgEncode = average => plg =>
+    points.encode(plg || plg === 0 ? plg : average);
 
-  const datumToX = d => [
-    ...players.encode(d.playerBasketballReferenceId),
-    ...teams.encode(d.playerTeamBasketballReferenceId),
-    ...teams.encode(d.opposingTeamBasketballReferenceId),
-    ...positions.encode(d.position),
-    ...birthCountries.encode(d.birthCountry),
-    ageAtTimeOfGame.encode(d.ageAtTimeOfGame),
-    yearOfGame.encode(d.yearOfGame),
-    monthOfGame.encode(d.monthOfGame),
-    dayOfGame.encode(d.dayOfGame),
-    hourOfGame.encode(d.hourOfGame),
-    experience.encode(d.experience),
-    ..._.map(i => plgEncode(d.pointsLastGames[i]))(_.range(0, 7)),
-    d.playingAtHome ? 1 : 0
-  ];
+  const splgEncode = average => sp =>
+    secondsPlayed.encode(sp || sp === 0 ? sp : average);
+
+  const datumToX = d => {
+    const pointsLastGamesAverage =
+      _.mean(_.filter(_.isInteger, d.pointsLastGames)) || 0;
+    const secondsPlayedLastGamesAverage =
+      _.mean(_.filter(_.isInteger, d.secondsPlayedLastGames)) || 0;
+
+    return [
+      ...players.encode(d.playerBasketballReferenceId),
+      ...teams.encode(d.playerTeamBasketballReferenceId),
+      ...teams.encode(d.opposingTeamBasketballReferenceId),
+      ...positions.encode(d.position),
+      ...birthCountries.encode(d.birthCountry),
+      ageAtTimeOfGame.encode(d.ageAtTimeOfGame),
+      yearOfGame.encode(d.yearOfGame),
+      monthOfGame.encode(d.monthOfGame),
+      dayOfGame.encode(d.dayOfGame),
+      hourOfGame.encode(d.hourOfGame),
+      experience.encode(d.experience),
+      ..._.map(i => plgEncode(pointsLastGamesAverage)(d.pointsLastGames[i]))(
+        _.range(0, 7)
+      ),
+      ..._.map(i =>
+        splgEncode(secondsPlayedLastGamesAverage)(d.secondsPlayedLastGames[i])
+      )(_.range(0, 7)),
+      d.playingAtHome ? 1 : 0
+    ];
+  };
 
   const datumToY = d => [
     points.encode(d.points),
@@ -344,6 +370,7 @@ async function cacheData() {
   console.time('mapData');
   let currentPlayerSeason = null;
   let pointsLastGames = [];
+  let secondsPlayedLastGames = [];
   for (let i in data) {
     if (
       currentPlayerSeason !==
@@ -353,12 +380,15 @@ async function cacheData() {
         data[i].season
       }`;
       pointsLastGames = [];
+      secondsPlayedLastGames = [];
     }
 
     data[i].pointsLastGames = pointsLastGames;
-    data[i] = [...datumToX(data[i]), ...datumToY(data[i])];
-
+    data[i].secondsPlayedLastGames = secondsPlayedLastGames;
     pointsLastGames.unshift(data[i].points);
+    secondsPlayedLastGames.unshift(data[i].secondsPlayed);
+
+    data[i] = [...datumToX(data[i]), ...datumToY(data[i])];
   }
   console.timeEnd('mapData');
 
@@ -426,6 +456,4 @@ exports.makeTrainingData = async function makeTrainingData(
   return res;
 };
 
-// cacheData();
-
-// exports.loadData();
+if (process.env.TASK === 'cacheData') cacheData();
