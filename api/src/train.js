@@ -144,11 +144,13 @@ async function predict(model, batch) {
     data => {
       const newData = [];
       for (let i = 0; i < data.length; i++)
-        newData[i] = { a: batch[i].points, p: data[i].points };
+        newData[i] = { ...batch[i], _predictions: data[i] };
       return newData;
     }
   ])(await predictions.data());
 }
+
+exports.predict = predict;
 
 async function testPredictions(model) {
   console.time('getDataFromPg');
@@ -182,42 +184,23 @@ async function testPredictions(model) {
 
 // train().then(testPredictions);
 
-// global.fetch = url => ({
-//   text: () => fs.readFileSync(url, 'utf8'),
-//   json: () => JSON.parse(fs.readFileSync(url, 'utf8')),
-//   arrayBuffer: () => fs.readFileSync(url).buffer
-// });
-//
-// (async () => {
-//   console.time('Load model');
-//   const modelJson = JSON.parse(
-//     fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545790795878/model.json`, 'utf8')
-//   );
-//   modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545790795878/weights.bin`;
-//
-//   const model = await tf.models.modelFromJSON(modelJson);
-//   console.timeEnd('Load model');
-//
-//   await testPredictions(model);
-// })();
+global.fetch = url => ({
+  text: () => fs.readFileSync(url, 'utf8'),
+  json: () => JSON.parse(fs.readFileSync(url, 'utf8')),
+  arrayBuffer: () => fs.readFileSync(url).buffer
+});
 
-// Double-double double-triple calculations
+async function loadModel() {
+  console.time('Load model');
+  const modelJson = JSON.parse(
+    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545877595864/model.json`, 'utf8')
+  );
+  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545877595864/weights.bin`;
 
-// [
-//   parseInt(d.points) >= 10,
-//   parseInt(d.totalRebounds) >= 10,
-//   parseInt(d.assists) >= 10,
-//   parseInt(d.blocks) >= 10,
-//   parseInt(d.steals) >= 10
-// ].filter(Boolean).length >= 2
-//   ? 1
-//   : 0,
-// [
-//   parseInt(d.points) >= 10,
-//   parseInt(d.totalRebounds) >= 10,
-//   parseInt(d.assists) >= 10,
-//   parseInt(d.blocks) >= 10,
-//   parseInt(d.steals) >= 10
-// ].filter(Boolean).length >= 3
-//   ? 1
-//   : 0
+  const model = await tf.models.modelFromJSON(modelJson);
+  console.timeEnd('Load model');
+
+  return model;
+}
+
+exports.loadModel = loadModel;

@@ -10,7 +10,7 @@ const { wsq } = require('./services');
 
 const DATA_FILE_PATH = path.join(__dirname, '../../tmp/data.csv');
 
-async function getDataFromPg({ limit = 'all', offset = 0 } = {}) {
+async function getDataFromPg({ limit = null, offset = 0 } = {}) {
   return await wsq.l`
     select
       gp.game_basketball_reference_id,
@@ -21,7 +21,6 @@ async function getDataFromPg({ limit = 'all', offset = 0 } = {}) {
       gp.player_basketball_reference_id, -- enum
       p.birth_country, -- enum
       floor(date_part('days', g.time_of_game - p.date_of_birth) / 365) as age_at_time_of_game,
-      g.arena, -- enum
       date_part('year', g.time_of_game) as year_of_game,
       date_part('month', g.time_of_game) as month_of_game,
       date_part('day', g.time_of_game) as day_of_game,
@@ -29,8 +28,6 @@ async function getDataFromPg({ limit = 'all', offset = 0 } = {}) {
       (case (g.home_team_basketball_reference_id = t.basketball_reference_id) when true then g.away_team_basketball_reference_id else g.home_team_basketball_reference_id end) as opposing_team_basketball_reference_id, --enum
       tp.team_basketball_reference_id as player_team_basketball_reference_id, -- enum
       tp.experience,
-      tp.height_inches,
-      tp.weight_lbs,
       tp.position, -- enum
       (g.home_team_basketball_reference_id = t.basketball_reference_id) as playing_at_home,
 
@@ -149,10 +146,6 @@ async function _getPlayers() {
   );
 }
 
-async function _getArenas() {
-  return _.map('arena')(await wsq.l`select distinct arena from games`);
-}
-
 async function _getBirthCountries() {
   return _.map('birthCountry')(
     await wsq.l`
@@ -207,9 +200,6 @@ exports.makeMapFunctions = async function makeMapFunctions() {
 
   const playersValues = await _getPlayers();
   const players = makeOneHotEncoders(playersValues);
-
-  const arenasValues = await _getArenas();
-  const arenas = makeOneHotEncoders(arenasValues);
 
   const birthCountriesValues = await _getBirthCountries();
   const birthCountries = makeOneHotEncoders(birthCountriesValues);
@@ -303,7 +293,6 @@ exports.makeMapFunctions = async function makeMapFunctions() {
     ...players.encode(d.playerBasketballReferenceId),
     ...teams.encode(d.playerTeamBasketballReferenceId),
     ...teams.encode(d.opposingTeamBasketballReferenceId),
-    ...arenas.encode(d.arena),
     ...positions.encode(d.position),
     ...birthCountries.encode(d.birthCountry),
     ageAtTimeOfGame.encode(d.ageAtTimeOfGame),

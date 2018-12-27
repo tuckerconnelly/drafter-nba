@@ -1,6 +1,7 @@
 const map = require('lodash/fp/map');
 const curry = require('lodash/fp/curry');
 const chunk = require('lodash/fp/chunk');
+const ProgressBar = require('progress');
 
 exports.pipe = curry(async function pipe(functions, list) {
   let outputs = list;
