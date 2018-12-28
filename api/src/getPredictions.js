@@ -95,6 +95,39 @@ const parseSalaryFile = _a.pipe([
   )
 ]);
 
+function calculateFantasyScore(stats) {
+  return Math.max(
+    0,
+    Math.round(
+      stats.points +
+        stats.threePointFieldGoals * 0.5 +
+        stats.totalRebounds * 1.25 +
+        stats.assists * 1.5 +
+        stats.steals * 2 +
+        stats.blocks * 2 +
+        stats.turnovers * -0.5 +
+        ([
+          stats.points >= 10,
+          stats.totalRebounds >= 10,
+          stats.assists >= 10,
+          stats.blocks >= 10,
+          stats.steals >= 10
+        ].filter(Boolean).length >= 2
+          ? 1.5
+          : 0) +
+        ([
+          stats.points >= 10,
+          stats.totalRebounds >= 10,
+          stats.assists >= 10,
+          stats.blocks >= 10,
+          stats.steals >= 10
+        ].filter(Boolean).length >= 3
+          ? 3
+          : 0)
+    )
+  );
+}
+
 const embellishSalaryData = memoizeFs(
   path.join(__dirname, '../../tmp/embellishSalaryData.json'),
   salaryData => {
@@ -120,8 +153,16 @@ const embellishSalaryData = memoizeFs(
         );
       }
 
-      const pointsLastGames = await wsq.l`
-        select gp.points
+      const statsLastGames = await wsq.l`
+        select
+          gp.points,
+          gp.three_point_field_goals,
+          gp.total_rebounds,
+          gp.assists,
+          gp.blocks,
+          gp.steals,
+          gp.turnovers,
+          gp.seconds_played
         from games g
         left join games_players gp
           on gp.game_basketball_reference_id = g.basketball_reference_id
@@ -141,26 +182,11 @@ const embellishSalaryData = memoizeFs(
         limit 7
       `;
 
-      const secondsPlayedLastGames = await wsq.l`
-        select gp.seconds_played
-        from games g
-        left join games_players gp
-          on gp.game_basketball_reference_id = g.basketball_reference_id
-          and gp.player_basketball_reference_id = ${
-            inDbPlayer.basketballReferenceId
-          }
-        where g.season = '2019'
-          and (
-            g.home_team_basketball_reference_id = ${
-              s.playerTeamBasketballReferenceId
-            }
-            or g.away_team_basketball_reference_id = ${
-              s.playerTeamBasketballReferenceId
-            }
-          )
-        order by g.time_of_game desc
-        limit 7
-      `;
+      const pointsLastGames = _.map('points')(statsLastGames);
+      const secondsPlayedLastGames = _.map('secondsPlayed')(statsLastGames);
+      const fantasyPointsLastGames = _.map(calculateFantasyScore)(
+        statsLastGames
+      );
 
       bar.tick(1);
 
@@ -186,12 +212,11 @@ const embellishSalaryData = memoizeFs(
         dayOfGame: moment(s.timeOfGame).date(),
         hourOfGame: moment(s.timeOfGame).hour(),
         experience: inDbPlayer.experience,
-        pointsLastGames: pointsLastGames.map(it => it.points),
-        secondsPlayedLastGames: secondsPlayedLastGames.map(
-          it => it.secondsPlayed
-        ),
+        pointsLastGames,
+        secondsPlayedLastGames,
         playingAtHome:
-          s.playerTeamBasketballReferenceId === s.homeTeamBasketballReferenceId
+          s.playerTeamBasketballReferenceId === s.homeTeamBasketballReferenceId,
+        fantasyPointsLastGames
       };
     })(salaryData);
   }
@@ -208,46 +233,24 @@ parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
   .then(predictWithModel)
   .then(
     _.map(it => {
-      const predictedFantasyScore =
-        it._predictions.points +
-        it._predictions.threePointFieldGoals * 0.5 +
-        it._predictions.totalRebounds * 1.25 +
-        it._predictions.assists * 1.5 +
-        it._predictions.steals * 2 +
-        it._predictions.blocks * 2 +
-        it._predictions.turnovers * -0.5 +
-        ([
-          it._predictions.points >= 10,
-          it._predictions.totalRebounds >= 10,
-          it._predictions.assists >= 10,
-          it._predictions.blocks >= 10,
-          it._predictions.steals >= 10
-        ].filter(Boolean).length >= 2
-          ? 1.5
-          : 0) +
-        ([
-          it._predictions.points >= 10,
-          it._predictions.totalRebounds >= 10,
-          it._predictions.assists >= 10,
-          it._predictions.blocks >= 10,
-          it._predictions.steals >= 10
-        ].filter(Boolean).length >= 3
-          ? 3
-          : 0);
+      const predictedFantasyScore = calculateFantasyScore(it._predictions);
       return {
-        name: it.name,
+        name: `${it.name.split(' ')[0][0]}.${it.name
+          .split(' ')
+          .slice(1)
+          .join(' ')}`,
         rosterPositions: it.rosterPositions,
         salaryDollars: it.salaryDollars,
-        difference: Math.round(predictedFantasyScore - it.pointsPerGame),
+        difference: predictedFantasyScore - it.pointsPerGame,
         pointsPerGame: it.pointsPerGame,
-        predictedFantasyScore: Math.round(predictedFantasyScore),
+        predictedFantasyScore: predictedFantasyScore,
         dollarsPerFantasyPoint: Math.round(
           it.salaryDollars / predictedFantasyScore
-        )
+        ),
+        fantasyPointsLastGames: it.fantasyPointsLastGames.join(',')
       };
     })
   )
-  .then(_.filter(it => it.pointsPerGame > 0))
   // PG, SG, SF, PF, C, G, F, UTIL
   // .then(_.filter(it => it.rosterPositions.includes('G')))
   .then(_.sortBy(['dollarsPerFantasyPoint']))
@@ -259,13 +262,14 @@ parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
       diff: it.difference,
       ppg: it.pointsPerGame,
       pred: it.predictedFantasyScore,
-      dpfp: it.dollarsPerFantasyPoint
+      dpfp: it.dollarsPerFantasyPoint,
+      fplg: it.fantasyPointsLastGames
     }))
   )
   .then(data => {
     const table = new Table({
       head: _.keys(data[0]),
-      colWidths: [20, 14, 8, 6, 6, 6, 8]
+      colWidths: [14, 14, 8, 6, 6, 6, 8, 20]
     });
     table.push(...data.map(_.values));
     console.log(table.toString());
