@@ -2,9 +2,9 @@
   "driver": "postgresql",
   "protocol": "tcp",
   "host": "localhost",
-  "port": 54321,
+  "port": 5432,
   "user": "postgres",
-  "password": "k1w8oj838d7qNv54",
+  "password": "password",
   "database": "drafter_nba",
   "directory": "migrations",
   "table": "migrations"

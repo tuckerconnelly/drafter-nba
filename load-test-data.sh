@@ -2,6 +2,8 @@
 
 # Postgres
 
+# rm -r /usr/local/var/postgres && initdb /usr/local/var/postgres -U postgres -W
+
 # Don't recreate the database in CI--it's already a fresh docker-compose build
 # and run
 if [[ -z "${CI}" ]]; then
@@ -11,7 +13,7 @@ if [[ -z "${CI}" ]]; then
   cd rambler && rambler apply -a && cd ..
 fi
 
-# cat dump.sql | psql 'postgres://postgres:password@localhost:5432/drafter_nba'
+# cat dump2.sql | psql 'postgres://postgres:password@localhost:5432/drafter_nba'
 
 # psql 'postgres://postgres:password@localhost:5432/drafter_nba' << EOF
 # -- Keep this idempotent by using ON CONFLICT DO NOTHING
@@ -21,4 +23,4 @@ fi
 # -- up to that point
 # EOF
 
-# pg_dump 'postgres://postgres:password@localhost:5432/drafter_nba' --data-only > dump.sql
+# pg_dump 'postgresql://postgres:k1w8oj838d7qNv54@localhost:54321/drafter_nba' --data-only > dump2.sql

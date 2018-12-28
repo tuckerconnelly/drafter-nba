@@ -6,17 +6,12 @@ const tf = require('@tensorflow/tfjs');
 const _ = require('lodash/fp');
 const ProgressBar = require('progress');
 
-const {
-  makeMapFunctions,
-  getDataFromPg,
-  loadData,
-  makeTrainingData
-} = require('./data');
+const { makeMapFunctions, loadData } = require('./data');
 
 const MODEL_SAVE_DIR = path.join(__dirname, '../../tmp');
 if (!fs.existsSync(MODEL_SAVE_DIR)) fs.mkdirSync(MODEL_SAVE_DIR);
 
-async function train() {
+async function train({ finalModel = false } = {}) {
   const {
     trainX,
     trainY,
@@ -28,13 +23,17 @@ async function train() {
     features,
     labels,
     trainSamples
-  } = await makeTrainingData(undefined, await loadData());
+  } = await loadData({
+    maxSamples: 170000,
+    validationSplit: finalModel ? 0 : 0.1,
+    testSplit: finalModel ? 0 : 0.1
+  });
 
   console.log({ features, labels, trainSamples });
 
   const MODEL_SAVE_PATH = `${MODEL_SAVE_DIR}/model_${Date.now()}`;
   const BATCH_SIZE = 5000;
-  const EPOCHS = 30;
+  const EPOCHS = 20;
   const NUM_BATCHES = Math.ceil(trainSamples / BATCH_SIZE);
 
   const model = tf.sequential();
@@ -88,43 +87,32 @@ async function train() {
       });
     }
 
-    const [valLoss, valMae] = await model.evaluate(validationX, validationY, {
+    if (!finalModel) {
+      const [valLoss, valMae] = await model.evaluate(validationX, validationY, {
+        batchSize: BATCH_SIZE
+      });
+
+      console.log({
+        valLoss: parseFloat(valLoss.dataSync()[0].toFixed(5)),
+        valMae: parseFloat(valMae.dataSync()[0].toFixed(3))
+      });
+    }
+
+    if (finalModel) {
+      await model.save(`file://${MODEL_SAVE_PATH}`);
+    }
+  }
+
+  if (!finalModel) {
+    const [testLoss, testMae] = await model.evaluate(testX, testY, {
       batchSize: BATCH_SIZE
     });
 
-    // const predictionsTensor = await model.predictOnBatch(validationX);
-    // const predictions = _.pipe([
-    //   _.toArray,
-    //   _.chunk(predictionsTensor.shape[1]),
-    //   mapYToData,
-    //   data => {
-    //     const newData = [];
-    //     for (let i = 0; i < data.length; i++)
-    //       newData[i] = {
-    //         a: validationData[i].points,
-    //         p: Math.round(data[i].points)
-    //       };
-    //     return newData;
-    //   }
-    // ])(await predictionsTensor.data());
-    // console.log(predictions);
-
     console.log({
-      valLoss: parseFloat(valLoss.dataSync()[0].toFixed(5)),
-      valMae: parseFloat(valMae.dataSync()[0].toFixed(3))
+      testLoss: parseFloat(testLoss.dataSync()[0].toFixed(5)),
+      testMae: parseFloat(testMae.dataSync()[0].toFixed(3))
     });
-
-    await model.save(`file://${MODEL_SAVE_PATH}`);
   }
-
-  const [testLoss, testMae] = await model.evaluate(testX, testY, {
-    batchSize: BATCH_SIZE
-  });
-
-  console.log({
-    testLoss: parseFloat(testLoss.dataSync()[0].toFixed(5)),
-    testMae: parseFloat(testMae.dataSync()[0].toFixed(3))
-  });
 
   return model;
 }
@@ -151,40 +139,6 @@ async function predict(model, batch) {
 
 exports.predict = predict;
 
-async function testPredictions(model) {
-  console.time('getDataFromPg');
-  let data = await getDataFromPg({ limit: 1000, offset: 10000 });
-  console.timeEnd('getDataFromPg');
-
-  console.time('mapData');
-  let currentPlayerSeason = null;
-  let pointsLastGames = [];
-  let secondsPlayedLastGames = [];
-  for (let i in data) {
-    if (
-      currentPlayerSeason !==
-      `${data[i].playerBasketballReferenceId}${data[i].season}`
-    ) {
-      currentPlayerSeason = `${data[i].playerBasketballReferenceId}${
-        data[i].season
-      }`;
-      pointsLastGames = [];
-      secondsPlayedLastGames = [];
-    }
-
-    data[i].pointsLastGames = pointsLastGames;
-    data[i].secondsPlayedLastGames = secondsPlayedLastGames;
-
-    pointsLastGames.unshift(data[i].points);
-    secondsPlayedLastGames.unshift(data[i].secondsPlayed);
-  }
-  console.timeEnd('mapData');
-
-  const res = await predict(model, data.slice(10));
-
-  console.log(JSON.stringify(res, null, 2));
-}
-
 global.fetch = url => ({
   text: () => fs.readFileSync(url, 'utf8'),
   json: () => JSON.parse(fs.readFileSync(url, 'utf8')),
@@ -194,9 +148,9 @@ global.fetch = url => ({
 async function loadModel() {
   console.time('Load model');
   const modelJson = JSON.parse(
-    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545902122227/model.json`, 'utf8')
+    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545975029354/model.json`, 'utf8')
   );
-  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545902122227/weights.bin`;
+  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545975029354/weights.bin`;
 
   const model = await tf.models.modelFromJSON(modelJson);
   console.timeEnd('Load model');
@@ -206,4 +160,5 @@ async function loadModel() {
 
 exports.loadModel = loadModel;
 
-if (process.env.TASK === 'train') train().then(testPredictions);
+if (process.env.TASK === 'train')
+  train({ finalModel: process.env.FINAL === '1' });

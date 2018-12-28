@@ -1,12 +1,18 @@
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline');
+const assert = require('assert');
+const util = require('util');
 
+const readline = require('readline');
+const ProgressBar = require('progress');
+const cmd = require('node-cmd');
 const _ = require('lodash/fp');
 require('@tensorflow/tfjs-node');
 const tf = require('@tensorflow/tfjs');
 
 const { wsq } = require('./services');
+
+const cmdGetAsync = util.promisify(cmd.get);
 
 const DATA_FILE_PATH = path.join(__dirname, '../../tmp/data.csv');
 
@@ -62,6 +68,127 @@ async function getDataFromPg({ limit = null, offset = 0 } = {}) {
 }
 
 exports.getDataFromPg = getDataFromPg;
+
+function calculateFantasyScore(stats) {
+  return Math.max(
+    0,
+    Math.round(
+      stats.points +
+        stats.threePointFieldGoals * 0.5 +
+        stats.totalRebounds * 1.25 +
+        stats.assists * 1.5 +
+        stats.steals * 2 +
+        stats.blocks * 2 +
+        stats.turnovers * -0.5 +
+        ([
+          stats.points >= 10,
+          stats.totalRebounds >= 10,
+          stats.assists >= 10,
+          stats.blocks >= 10,
+          stats.steals >= 10
+        ].filter(Boolean).length >= 2
+          ? 1.5
+          : 0) +
+        ([
+          stats.points >= 10,
+          stats.totalRebounds >= 10,
+          stats.assists >= 10,
+          stats.blocks >= 10,
+          stats.steals >= 10
+        ].filter(Boolean).length >= 3
+          ? 3
+          : 0)
+    )
+  );
+}
+
+exports.calculateFantasyScore = calculateFantasyScore;
+
+async function getStatsLastGamesFromPg({
+  playerBasketballReferenceId,
+  teamBasketballReferenceId
+}) {
+  assert(playerBasketballReferenceId);
+  assert(teamBasketballReferenceId);
+
+  const statsLastGames = await wsq.l`
+    select
+      gp.points,
+      gp.three_point_field_goals,
+      gp.total_rebounds,
+      gp.assists,
+      gp.blocks,
+      gp.steals,
+      gp.turnovers,
+      gp.seconds_played
+    from games g
+    left join games_players gp
+      on gp.game_basketball_reference_id = g.basketball_reference_id
+      and gp.player_basketball_reference_id = ${playerBasketballReferenceId}
+    where g.season = '2019'
+      and (
+        g.home_team_basketball_reference_id = ${teamBasketballReferenceId}
+        or g.away_team_basketball_reference_id = ${teamBasketballReferenceId}
+      )
+    order by g.time_of_game desc
+    limit 7
+  `;
+
+  return {
+    pointsLastGames: _.map('points', statsLastGames),
+    threePointFieldGoalsLastGames: _.map(
+      'threePointFieldGoals',
+      statsLastGames
+    ),
+    totalReboundsLastGames: _.map('totalRebounds', statsLastGames),
+    assistsLastGames: _.map('assists', statsLastGames),
+    blocksLastGames: _.map('blocks', statsLastGames),
+    stealsLastGames: _.map('steals', statsLastGames),
+    turnoversLastGames: _.map('turnovers', statsLastGames),
+    secondsPlayedLastGames: _.map('secondsPlayed', statsLastGames),
+    fantasyPointsLastGames: _.map(calculateFantasyScore, statsLastGames)
+  };
+}
+
+exports.getStatsLastGamesFromPg = getStatsLastGamesFromPg;
+
+async function addLastGamesStatsMutates(data) {
+  console.log('addLastGamesStatsMutates');
+  const bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
+    width: 40,
+    total: data.length
+  });
+
+  const BATCH_SIZE = 10;
+
+  for (let i = 0; i < data.length / BATCH_SIZE; i++) {
+    await Promise.all(
+      _.range(i * BATCH_SIZE, (i + 1) * BATCH_SIZE).map(async n => {
+        if (!data[n]) return;
+
+        const statsLastGames = await getStatsLastGamesFromPg({
+          playerBasketballReferenceId: data[n].playerBasketballReferenceId,
+          teamBasketballReferenceId: data[n].playerTeamBasketballReferenceId
+        });
+        data[n].pointsLastGames = statsLastGames.pointsLastGames;
+        data[n].threePointFieldGoalsLastGames =
+          statsLastGames.threePointFieldGoalsLastGames;
+        data[n].totalReboundsLastGames = statsLastGames.totalReboundsLastGames;
+        data[n].assistsLastGames = statsLastGames.assistsLastGames;
+        data[n].blocksLastGames = statsLastGames.blocksLastGames;
+        data[n].stealsLastGames = statsLastGames.stealsLastGames;
+        data[n].turnoversLastGames = statsLastGames.turnoversLastGames;
+        data[n].secondsPlayedLastGames = statsLastGames.secondsPlayedLastGames;
+        data[n].fantasyPointsLastGames = statsLastGames.fantasyPointsLastGames;
+
+        bar.tick(1);
+      })
+    );
+  }
+  return data;
+}
+
+exports.addLastGamesStatsMutates = addLastGamesStatsMutates;
 
 async function _getStats() {
   return await wsq.l`
@@ -297,18 +424,24 @@ exports.makeMapFunctions = async function makeMapFunctions() {
     stats.freeThrowsMax
   );
 
-  const plgEncode = average => plg =>
-    points.encode(plg || plg === 0 ? plg : average);
+  const lgEncode = _.curry((num, encodeFn, lastGamesStats) => {
+    const average =
+      _.pipe([_.slice(0, num), _.filter(_.isInteger), _.mean])(
+        lastGamesStats
+      ) || 0;
 
-  const splgEncode = average => sp =>
-    secondsPlayed.encode(sp || sp === 0 ? sp : average);
+    return _.map(
+      i =>
+        encodeFn(
+          lastGamesStats[i] || lastGamesStats[i] === 0
+            ? lastGamesStats[i]
+            : average
+        ),
+      _.range(0, 7)
+    );
+  });
 
   const datumToX = d => {
-    const pointsLastGamesAverage =
-      _.mean(_.filter(_.isInteger, d.pointsLastGames)) || 0;
-    const secondsPlayedLastGamesAverage =
-      _.mean(_.filter(_.isInteger, d.secondsPlayedLastGames)) || 0;
-
     return [
       ...players.encode(d.playerBasketballReferenceId),
       ...teams.encode(d.playerTeamBasketballReferenceId),
@@ -321,12 +454,18 @@ exports.makeMapFunctions = async function makeMapFunctions() {
       dayOfGame.encode(d.dayOfGame),
       hourOfGame.encode(d.hourOfGame),
       experience.encode(d.experience),
-      ..._.map(i => plgEncode(pointsLastGamesAverage)(d.pointsLastGames[i]))(
-        _.range(0, 7)
+      ...lgEncode(7, points.encode, d.pointsLastGames),
+      ...lgEncode(
+        7,
+        threePointFieldGoals.encode,
+        d.threePointFieldGoalsLastGames
       ),
-      ..._.map(i =>
-        splgEncode(secondsPlayedLastGamesAverage)(d.secondsPlayedLastGames[i])
-      )(_.range(0, 7)),
+      ...lgEncode(7, totalRebounds.encode, d.totalReboundsLastGames),
+      ...lgEncode(7, assists.encode, d.assistsLastGames),
+      ...lgEncode(7, blocks.encode, d.blocksLastGames),
+      ...lgEncode(7, steals.encode, d.stealsLastGames),
+      ...lgEncode(7, turnovers.encode, d.turnoversLastGames),
+      ...lgEncode(7, secondsPlayed.encode, d.secondsPlayedLastGames),
       d.playingAtHome ? 1 : 0
     ];
   };
@@ -367,27 +506,12 @@ async function cacheData() {
   let data = await getDataFromPg();
   console.timeEnd('getDataFromPg');
 
+  console.time('addLastGamesStatsMutates');
+  await addLastGamesStatsMutates(data);
+  console.time('addLastGamesStatsMutates');
+
   console.time('mapData');
-  let currentPlayerSeason = null;
-  let pointsLastGames = [];
-  let secondsPlayedLastGames = [];
   for (let i in data) {
-    if (
-      currentPlayerSeason !==
-      `${data[i].playerBasketballReferenceId}${data[i].season}`
-    ) {
-      currentPlayerSeason = `${data[i].playerBasketballReferenceId}${
-        data[i].season
-      }`;
-      pointsLastGames = [];
-      secondsPlayedLastGames = [];
-    }
-
-    data[i].pointsLastGames = pointsLastGames;
-    data[i].secondsPlayedLastGames = secondsPlayedLastGames;
-    pointsLastGames.unshift(data[i].points);
-    secondsPlayedLastGames.unshift(data[i].secondsPlayed);
-
     data[i] = [...datumToX(data[i]), ...datumToY(data[i])];
   }
   console.timeEnd('mapData');
@@ -403,57 +527,91 @@ async function cacheData() {
   console.timeEnd('writeData');
 }
 
-exports.loadData = async function loadData({ maxSamples = Infinity } = {}) {
+exports.loadData = async function loadData({
+  maxSamples = Infinity,
+  validationSplit = 0.1,
+  testSplit = 0.1
+} = {}) {
+  let totalSamples = _.parseInt(
+    10,
+    _.trim(await cmdGetAsync(`wc -l ${DATA_FILE_PATH}`))
+  );
+
+  assert(totalSamples);
+
+  totalSamples = Math.max(maxSamples, totalSamples);
+
+  const trainSamples = Math.round(
+    totalSamples * (1 - testSplit - validationSplit)
+  );
+  const validationSamples = Math.round(totalSamples * validationSplit);
+  const testSamples = Math.round(totalSamples * testSplit);
+
+  console.debug({
+    trainSamples,
+    validationSamples,
+    testSamples
+  });
+
   const fileStream = fs.createReadStream(DATA_FILE_PATH, 'utf8');
   const rl = readline.createInterface({
     input: fileStream,
     crlfDelay: Infinity
   });
 
-  let parsedX = [];
-  let parsedY = [];
+  const trainX = [];
+  const trainY = [];
+  const validationX = [];
+  const validationY = [];
+  const testX = [];
+  const testY = [];
   let i = 0;
 
   for await (const line of rl) {
-    if (i > maxSamples) break;
-    i++;
+    if (i >= maxSamples) break;
 
     let parsedLine = line.split(',').map(parseFloat);
 
-    parsedX.push(parsedLine.slice(0, -8));
-    parsedY.push(parsedLine.slice(-8));
+    if (i > trainSamples + validationSamples) {
+      testX.push(parsedLine.slice(0, -8));
+      testY.push(parsedLine.slice(-8));
+      i++;
+      continue;
+    }
+
+    if (i > trainSamples) {
+      validationX.push(parsedLine.slice(0, -8));
+      validationY.push(parsedLine.slice(-8));
+      i++;
+      continue;
+    }
+
+    trainX.push(parsedLine.slice(0, -8));
+    trainY.push(parsedLine.slice(-8));
+
+    i++;
   }
 
-  return { parsedX, parsedY };
-};
+  console.debug({
+    trainXLength: trainX.length,
+    trainYLength: trainY.length,
+    validationXLength: validationX.length,
+    validationYLength: validationY.length,
+    testXLength: testX.length,
+    testYLength: testY.length
+  });
 
-exports.makeTrainingData = async function makeTrainingData(
-  { validationSplit = 0.1, testSplit = 0.1 } = {},
-  { parsedX, parsedY }
-) {
-  const totalSamples = parsedX.length;
-  const trainSamples = Math.floor(
-    totalSamples * (1 - testSplit - validationSplit)
-  );
-  const validationSamples = Math.floor(totalSamples * validationSplit);
-
-  const res = {
-    trainX: tf.tensor2d(parsedX.slice(0, trainSamples)),
-    trainY: tf.tensor2d(parsedY.slice(0, trainSamples)),
-    validationX: tf.tensor2d(
-      parsedX.slice(trainSamples, trainSamples + validationSamples)
-    ),
-    validationY: tf.tensor2d(
-      parsedY.slice(trainSamples, trainSamples + validationSamples)
-    ),
-    testX: tf.tensor2d(parsedX.slice(trainSamples + validationSamples)),
-    testY: tf.tensor2d(parsedY.slice(trainSamples + validationSamples)),
-    features: parsedX[0].length,
-    labels: parsedY[0].length,
-    trainSamples
+  return {
+    trainX: tf.tensor2d(trainX),
+    trainY: tf.tensor2d(trainY),
+    validationX: validationSamples ? tf.tensor2d(validationX) : null,
+    validationY: validationSamples ? tf.tensor2d(validationY) : null,
+    testX: testSamples ? tf.tensor2d(testX) : null,
+    testY: testSamples ? tf.tensor2d(testY) : null,
+    features: trainX[0].length,
+    labels: trainY[0].length,
+    trainSamples: trainX.length
   };
-
-  return res;
 };
 
 if (process.env.TASK === 'cacheData') cacheData();

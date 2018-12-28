@@ -119,8 +119,11 @@ const _scrapeTeamSeason = _a.pipe([
               .one();
 
             if (!inDbTeamPlayer) {
-              inDbTeamPlayer = await wsq.from`teams_players`.insert(
-                _.pick(
+              await wsq.from`teams_players`
+                .set({ currentlyOnThisTeam: false })
+                .where(_.pick(['playerBasketballReferenceId'], teamPlayer));
+              inDbTeamPlayer = await wsq.from`teams_players`.insert({
+                ..._.pick(
                   [
                     'playerBasketballReferenceId',
                     'teamBasketballReferenceId',
@@ -132,8 +135,9 @@ const _scrapeTeamSeason = _a.pipe([
                     'experience'
                   ],
                   teamPlayer
-                )
-              ).return`*`.one();
+                ),
+                currentlyOnThisTeam: true
+              }).return`*`.one();
             }
 
             return inDbTeamPlayer;
@@ -144,19 +148,6 @@ const _scrapeTeamSeason = _a.pipe([
 ]);
 
 _a.pipe([
-  _a.tap(
-    async () =>
-      await wsq.l`
-        delete from teams_players;
-        alter sequence teams_players_id_seq RESTART WITH 1;
-
-        delete from teams;
-        alter sequence teams_id_seq RESTART WITH 1;
-
-        delete from players;
-        alter sequence players_id_seq RESTART WITH 1;
-      `
-  ),
   html,
   $ => $('#teams_active a'),
   _.map('attribs.href'),
