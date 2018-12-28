@@ -12,6 +12,7 @@ const MODEL_SAVE_DIR = path.join(__dirname, '../../tmp');
 if (!fs.existsSync(MODEL_SAVE_DIR)) fs.mkdirSync(MODEL_SAVE_DIR);
 
 async function train({ finalModel = false } = {}) {
+  const BATCH_SIZE = 5000;
   const {
     trainX,
     trainY,
@@ -24,15 +25,14 @@ async function train({ finalModel = false } = {}) {
     labels,
     trainSamples
   } = await loadData({
-    maxSamples: 170000,
     validationSplit: finalModel ? 0 : 0.1,
-    testSplit: finalModel ? 0 : 0.1
+    testSplit: finalModel ? 0 : 0.1,
+    batchSize: 5000
   });
 
   console.log({ features, labels, trainSamples });
 
   const MODEL_SAVE_PATH = `${MODEL_SAVE_DIR}/model_${Date.now()}`;
-  const BATCH_SIZE = 5000;
   const EPOCHS = 20;
   const NUM_BATCHES = Math.ceil(trainSamples / BATCH_SIZE);
 
@@ -70,16 +70,7 @@ async function train({ finalModel = false } = {}) {
     });
 
     for (let j = 0; j < NUM_BATCHES; j++) {
-      const [loss, mae] = await model.trainOnBatch(
-        trainX.slice(
-          j * BATCH_SIZE,
-          j === NUM_BATCHES - 1 ? trainSamples % BATCH_SIZE : BATCH_SIZE
-        ),
-        trainY.slice(
-          j * BATCH_SIZE,
-          j === NUM_BATCHES - 1 ? trainSamples % BATCH_SIZE : BATCH_SIZE
-        )
-      );
+      const [loss, mae] = await model.trainOnBatch(trainX[j], trainY[j]);
 
       bar.tick(1, {
         loss: loss.toFixed(5),
@@ -148,9 +139,9 @@ global.fetch = url => ({
 async function loadModel() {
   console.time('Load model');
   const modelJson = JSON.parse(
-    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545975029354/model.json`, 'utf8')
+    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1545991280763/model.json`, 'utf8')
   );
-  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545975029354/weights.bin`;
+  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1545991280763/weights.bin`;
 
   const model = await tf.models.modelFromJSON(modelJson);
   console.timeEnd('Load model');

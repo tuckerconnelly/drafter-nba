@@ -23,6 +23,7 @@ async function getDataFromPg({ limit = null, offset = 0 } = {}) {
       p.name as player_name,
       t.name as team_name,
       g.season as season,
+      g.time_of_game as time_of_game,
 
       gp.player_basketball_reference_id, -- enum
       p.birth_country, -- enum
@@ -37,6 +38,7 @@ async function getDataFromPg({ limit = null, offset = 0 } = {}) {
       tp.position, -- enum
       (g.home_team_basketball_reference_id = t.basketball_reference_id) as playing_at_home,
       gp.seconds_played,
+      gp.starter,
 
       gp.points,
       gp.three_point_field_goals,
@@ -106,10 +108,12 @@ exports.calculateFantasyScore = calculateFantasyScore;
 
 async function getStatsLastGamesFromPg({
   playerBasketballReferenceId,
-  teamBasketballReferenceId
+  season,
+  currentGameDate
 }) {
   assert(playerBasketballReferenceId);
-  assert(teamBasketballReferenceId);
+  assert(season);
+  assert(currentGameDate);
 
   const statsLastGames = await wsq.l`
     select
@@ -125,11 +129,15 @@ async function getStatsLastGamesFromPg({
     left join games_players gp
       on gp.game_basketball_reference_id = g.basketball_reference_id
       and gp.player_basketball_reference_id = ${playerBasketballReferenceId}
-    where g.season = '2019'
+    inner join teams_players tp
+      on tp.player_basketball_reference_id = gp.player_basketball_reference_id
+      and tp.season = ${season}
+    where g.season = ${season}
       and (
-        g.home_team_basketball_reference_id = ${teamBasketballReferenceId}
-        or g.away_team_basketball_reference_id = ${teamBasketballReferenceId}
+        g.home_team_basketball_reference_id = tp.team_basketball_reference_id
+        or g.away_team_basketball_reference_id = tp.team_basketball_reference_id
       )
+    and g.time_of_game < ${currentGameDate}
     order by g.time_of_game desc
     limit 7
   `;
@@ -159,7 +167,7 @@ async function addLastGamesStatsMutates(data) {
     total: data.length
   });
 
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 8;
 
   for (let i = 0; i < data.length / BATCH_SIZE; i++) {
     await Promise.all(
@@ -168,7 +176,8 @@ async function addLastGamesStatsMutates(data) {
 
         const statsLastGames = await getStatsLastGamesFromPg({
           playerBasketballReferenceId: data[n].playerBasketballReferenceId,
-          teamBasketballReferenceId: data[n].playerTeamBasketballReferenceId
+          season: data[n].season,
+          currentGameDate: data[n].timeOfGame
         });
         data[n].pointsLastGames = statsLastGames.pointsLastGames;
         data[n].threePointFieldGoalsLastGames =
@@ -466,7 +475,8 @@ exports.makeMapFunctions = async function makeMapFunctions() {
       ...lgEncode(7, steals.encode, d.stealsLastGames),
       ...lgEncode(7, turnovers.encode, d.turnoversLastGames),
       ...lgEncode(7, secondsPlayed.encode, d.secondsPlayedLastGames),
-      d.playingAtHome ? 1 : 0
+      d.playingAtHome ? 1 : 0,
+      d.starter ? 1 : 0
     ];
   };
 
@@ -496,8 +506,6 @@ exports.makeMapFunctions = async function makeMapFunctions() {
 };
 
 async function cacheData() {
-  fs.writeFileSync(DATA_FILE_PATH, '');
-
   console.time('makeMapFunctions');
   const { datumToX, datumToY } = await exports.makeMapFunctions();
   console.timeEnd('makeMapFunctions');
@@ -512,15 +520,18 @@ async function cacheData() {
 
   console.time('mapData');
   for (let i in data) {
-    data[i] = [...datumToX(data[i]), ...datumToY(data[i])];
+    data[i] = [...datumToX(data[i]) /* ...datumToY(data[i]) */];
   }
   console.timeEnd('mapData');
+
+  console.log(data);
 
   console.time('shuffleData');
   data = _.shuffle(data);
   console.timeEnd('shuffleData');
 
   console.time('writeData');
+  fs.writeFileSync(DATA_FILE_PATH, '');
   for (let datum of data) {
     fs.writeFileSync(DATA_FILE_PATH, datum.join(',') + '\n', { flag: 'a' });
   }
@@ -529,6 +540,7 @@ async function cacheData() {
 
 exports.loadData = async function loadData({
   maxSamples = Infinity,
+  batchSize = 5000,
   validationSplit = 0.1,
   testSplit = 0.1
 } = {}) {
@@ -539,7 +551,7 @@ exports.loadData = async function loadData({
 
   assert(totalSamples);
 
-  totalSamples = Math.max(maxSamples, totalSamples);
+  totalSamples = Math.min(maxSamples, totalSamples);
 
   const trainSamples = Math.round(
     totalSamples * (1 - testSplit - validationSplit)
@@ -602,8 +614,8 @@ exports.loadData = async function loadData({
   });
 
   return {
-    trainX: tf.tensor2d(trainX),
-    trainY: tf.tensor2d(trainY),
+    trainX: _.chunk(batchSize, trainX).map(it => tf.tensor2d(it)),
+    trainY: _.chunk(batchSize, trainY).map(it => tf.tensor2d(it)),
     validationX: validationSamples ? tf.tensor2d(validationX) : null,
     validationY: validationSamples ? tf.tensor2d(validationY) : null,
     testX: testSamples ? tf.tensor2d(testX) : null,

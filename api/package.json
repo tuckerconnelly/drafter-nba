@@ -5,7 +5,7 @@
     "loadGames": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) node --max-old-space-size=12288 src/loadGames.js; tput bel",
     "cacheData": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=cacheData node --max-old-space-size=12288 src/data.js; tput bel",
     "train": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=train node --max-old-space-size=12288 src/train.js; tput bel",
-    "trainFinal": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=train FINAL=1 node --max-old-space-size=12288 src/train.js; tput bel",
+    "trainFinal": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=train FINAL=1 node --max-old-space-size=32768 src/train.js; tput bel",
     "getPredictions": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=getPredictions node --max-old-space-size=12288 src/getPredictions.js; tput bel",
     "test": "env $([ -f .env.test ] && cat .env.test | grep -v ^# | xargs) jest --detectOpenHandles --no-cache",
     "prettier": "prettier --write 'src/**/*.js'",
