@@ -3,6 +3,7 @@
     "dev": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) nodemon --max-old-space-size=12288",
     "loadTeams": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) node --max-old-space-size=12288 src/loadTeams.js; tput bel",
     "loadGames": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) node --max-old-space-size=12288 src/loadGames.js; tput bel",
+    "cacheDataPart": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=cacheDataPart node --max-old-space-size=12288 src/data.js; tput bel",
     "cacheData": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=cacheData node --max-old-space-size=12288 src/data.js; tput bel",
     "train": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=train node --max-old-space-size=12288 src/train.js; tput bel",
     "trainFinal": "env $([ -f .env ] && cat .env | grep -v ^# | xargs) TASK=train FINAL=1 node --max-old-space-size=32768 src/train.js; tput bel",

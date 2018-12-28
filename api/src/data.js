@@ -14,6 +14,7 @@ const { wsq } = require('./services');
 
 const cmdGetAsync = util.promisify(cmd.get);
 
+const DATA_FILE_PART_PATH = path.join(__dirname, '../tmp/data-part-{}.csv');
 const DATA_FILE_PATH = path.join(__dirname, '../../tmp/data.csv');
 
 async function getDataFromPg({ limit = null, offset = 0 } = {}) {
@@ -167,7 +168,7 @@ async function addLastGamesStatsMutates(data) {
     total: data.length
   });
 
-  const BATCH_SIZE = 8;
+  const BATCH_SIZE = 1;
 
   for (let i = 0; i < data.length / BATCH_SIZE; i++) {
     await Promise.all(
@@ -505,13 +506,35 @@ exports.makeMapFunctions = async function makeMapFunctions() {
   return { datumToX, datumToY, yToDatum };
 };
 
-async function cacheData() {
-  console.time('makeMapFunctions');
+async function getTotalSamples() {
+  const totalSamples = _.parseInt(
+    10,
+    _.trim(await cmdGetAsync(`wc -l ${DATA_FILE_PATH}`))
+  );
+
+  assert(totalSamples);
+
+  return totalSamples;
+}
+
+async function cacheDataPart({ i = 0, max = 1 }) {
+  assert(i || i === 0);
+  assert(max);
+
+  const totalSamples = await getTotalSamples();
+  const samplesPerPart = Math.floor(totalSamples / max);
+
+  const samplesPerRun = console.time('makeMapFunctions');
   const { datumToX, datumToY } = await exports.makeMapFunctions();
   console.timeEnd('makeMapFunctions');
 
   console.time('getDataFromPg');
-  let data = await getDataFromPg();
+  const params = {
+    limit: i === max - 1 ? null : samplesPerPart,
+    offset: i * samplesPerPart
+  }
+  console.log(params);
+  let data = await getDataFromPg(params);
   console.timeEnd('getDataFromPg');
 
   console.time('addLastGamesStatsMutates');
@@ -520,22 +543,42 @@ async function cacheData() {
 
   console.time('mapData');
   for (let i in data) {
-    data[i] = [...datumToX(data[i]) /* ...datumToY(data[i]) */];
+    data[i] = [...datumToX(data[i]), ...datumToY(data[i])];
   }
   console.timeEnd('mapData');
 
-  console.log(data);
-
-  console.time('shuffleData');
-  data = _.shuffle(data);
-  console.timeEnd('shuffleData');
-
   console.time('writeData');
-  fs.writeFileSync(DATA_FILE_PATH, '');
+  fs.writeFileSync(DATA_FILE_PART_PATH.replace('{}', i), '');
   for (let datum of data) {
-    fs.writeFileSync(DATA_FILE_PATH, datum.join(',') + '\n', { flag: 'a' });
+    fs.writeFileSync(
+      DATA_FILE_PART_PATH.replace('{}', i),
+      datum.join(',') + '\n',
+      { flag: 'a' }
+    );
   }
   console.timeEnd('writeData');
+}
+
+async function cacheData() {
+  const MAX = 8;
+
+  // await Promise.all(
+  //   _.range(0, MAX).map(i =>
+  //     cmdGetAsync(`CD_PART=${i} CD_MAX=${MAX} npm run cacheDataPart`)
+  //   )
+  // );
+
+  console.time('parseData');
+  const data = _.pipe([
+    _.map(i => fs.readFileSync(DATA_FILE_PART_PATH.replace('{}', i), 'utf8')),
+    _.flatMap(file => file.split('\n')),
+    _.filter(_.identity),
+    _.shuffle,
+    _.join('\n')
+  ])(_.range(0, MAX));
+  console.time('parseData');
+
+  fs.writeFileSync(DATA_FILE_PATH, data);
 }
 
 exports.loadData = async function loadData({
@@ -544,14 +587,7 @@ exports.loadData = async function loadData({
   validationSplit = 0.1,
   testSplit = 0.1
 } = {}) {
-  let totalSamples = _.parseInt(
-    10,
-    _.trim(await cmdGetAsync(`wc -l ${DATA_FILE_PATH}`))
-  );
-
-  assert(totalSamples);
-
-  totalSamples = Math.min(maxSamples, totalSamples);
+  const totalSamples = Math.min(maxSamples, await getTotalSamples());
 
   const trainSamples = Math.round(
     totalSamples * (1 - testSplit - validationSplit)
@@ -626,4 +662,9 @@ exports.loadData = async function loadData({
   };
 };
 
+if (process.env.TASK === 'cacheDataPart')
+  cacheDataPart({
+    i: parseInt(process.env.CD_PART),
+    max: parseInt(process.env.CD_MAX || '8')
+  });
 if (process.env.TASK === 'cacheData') cacheData();
