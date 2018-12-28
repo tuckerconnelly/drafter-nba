@@ -14,7 +14,6 @@ const { wsq } = require('./services');
 
 const cmdGetAsync = util.promisify(cmd.get);
 
-const DATA_FILE_PART_PATH = path.join(__dirname, '../tmp/data-part-{}.csv');
 const DATA_FILE_PATH = path.join(__dirname, '../../tmp/data.csv');
 
 async function getDataFromPg({ limit = null, offset = 0 } = {}) {
@@ -168,7 +167,7 @@ async function addLastGamesStatsMutates(data) {
     total: data.length
   });
 
-  const BATCH_SIZE = 1;
+  const BATCH_SIZE = 8;
 
   for (let i = 0; i < data.length / BATCH_SIZE; i++) {
     await Promise.all(
@@ -517,24 +516,13 @@ async function getTotalSamples() {
   return totalSamples;
 }
 
-async function cacheDataPart({ i = 0, max = 1 }) {
-  assert(i || i === 0);
-  assert(max);
-
-  const totalSamples = await getTotalSamples();
-  const samplesPerPart = Math.floor(totalSamples / max);
-
-  const samplesPerRun = console.time('makeMapFunctions');
+async function cacheData(i) {
+  console.time('makeMapFunctions');
   const { datumToX, datumToY } = await exports.makeMapFunctions();
   console.timeEnd('makeMapFunctions');
 
   console.time('getDataFromPg');
-  const params = {
-    limit: i === max - 1 ? null : samplesPerPart,
-    offset: i * samplesPerPart
-  }
-  console.log(params);
-  let data = await getDataFromPg(params);
+  let data = await getDataFromPg();
   console.timeEnd('getDataFromPg');
 
   console.time('addLastGamesStatsMutates');
@@ -547,38 +535,16 @@ async function cacheDataPart({ i = 0, max = 1 }) {
   }
   console.timeEnd('mapData');
 
+  console.time('shuffleData');
+  data = _.shuffle(data);
+  console.timeEnd('shuffleData');
+
   console.time('writeData');
-  fs.writeFileSync(DATA_FILE_PART_PATH.replace('{}', i), '');
+  fs.writeFileSync(DATA_FILE_PATH, '');
   for (let datum of data) {
-    fs.writeFileSync(
-      DATA_FILE_PART_PATH.replace('{}', i),
-      datum.join(',') + '\n',
-      { flag: 'a' }
-    );
+    fs.writeFileSync(DATA_FILE_PATH, datum.join(',') + '\n', { flag: 'a' });
   }
   console.timeEnd('writeData');
-}
-
-async function cacheData() {
-  const MAX = 8;
-
-  // await Promise.all(
-  //   _.range(0, MAX).map(i =>
-  //     cmdGetAsync(`CD_PART=${i} CD_MAX=${MAX} npm run cacheDataPart`)
-  //   )
-  // );
-
-  console.time('parseData');
-  const data = _.pipe([
-    _.map(i => fs.readFileSync(DATA_FILE_PART_PATH.replace('{}', i), 'utf8')),
-    _.flatMap(file => file.split('\n')),
-    _.filter(_.identity),
-    _.shuffle,
-    _.join('\n')
-  ])(_.range(0, MAX));
-  console.time('parseData');
-
-  fs.writeFileSync(DATA_FILE_PATH, data);
 }
 
 exports.loadData = async function loadData({
@@ -662,9 +628,4 @@ exports.loadData = async function loadData({
   };
 };
 
-if (process.env.TASK === 'cacheDataPart')
-  cacheDataPart({
-    i: parseInt(process.env.CD_PART),
-    max: parseInt(process.env.CD_MAX || '8')
-  });
 if (process.env.TASK === 'cacheData') cacheData();
