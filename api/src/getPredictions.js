@@ -13,6 +13,7 @@ const memoizeFs = require('./lib/memoize-fs');
 const { wsq } = require('./services');
 const { getStatsLastGamesFromPg, calculateFantasyScore } = require('./data');
 const { predict, loadModel } = require('./train');
+const { formatName, getLineups } = require('./getLineups');
 
 const ABBREVIATIONS = {
   NO: 'NOP',
@@ -99,11 +100,13 @@ const parseSalaryFile = _a.pipe([
 
 const embellishSalaryData = memoizeFs(
   path.join(__dirname, '../../tmp/embellishSalaryData.json'),
-  salaryData => {
+  async salaryData => {
     const bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
       width: 40,
       total: salaryData.length
     });
+
+    const lineups = await getLineups();
 
     return _a.mapBatches(10, async s => {
       const inDbPlayer = await wsq.l`
@@ -129,21 +132,18 @@ const embellishSalaryData = memoizeFs(
         currentGameDate: new Date()
       });
 
-      const starter = _.getOr(
-        false,
-        'starter',
-        await wsq.l`
-          select gp.starter
-          from games_players gp
-          inner join games g
-            on g.basketball_reference_id = gp.game_basketball_reference_id
-          where gp.player_basketball_reference_id = ${
-            inDbPlayer.basketballReferenceId
-          }
-          order by g.time_of_game desc
-          limit 1
-      `.one()
-      );
+      const teamRoster = lineups[s.playerTeamBasketballReferenceId];
+
+      if (!teamRoster) {
+        throw new Error(
+          `Team roster not found in lineups: ${
+            s.playerTeamBasketballReferenceId
+          }`
+        );
+      }
+
+      const starter = _.find({ name: formatName(s.name) })(teamRoster.starters);
+      const injured = _.find({ name: formatName(s.name) })(teamRoster.injured);
 
       bar.tick(1);
 
@@ -172,7 +172,10 @@ const embellishSalaryData = memoizeFs(
         playingAtHome:
           s.playerTeamBasketballReferenceId === s.homeTeamBasketballReferenceId,
         ...statsLastGames,
-        starter
+        starter: !!starter,
+        injured: !!injured,
+        injury:
+          _.getOr(null, 'injury', starter) || _.getOr(null, 'injury', injured)
       };
     })(salaryData);
   }
@@ -186,8 +189,75 @@ const predictWithModel = memoizeFs(
 if (process.env.TASK === 'getPredictions') {
   parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
     .then(embellishSalaryData)
-    // TODO Replace with injured/inactive players
-    .then(data => data.filter(datum => datum.fantasyPointsLastGames.length > 0))
+    .then(async data => {
+      const startersByTeam = _.pipe([
+        _.filter('starter'),
+        _.reduce(
+          (prev, curr) => ({
+            ...prev,
+            [curr.playerTeamBasketballReferenceId]: [
+              ...(prev[curr.playerTeamBasketballReferenceId] || []),
+              {
+                name: formatName(curr.name),
+                position: curr.position,
+                injury: curr.injury
+              }
+            ]
+          }),
+          {}
+        ),
+        _.mapValues(starters => ({ starters }))
+      ])(data);
+
+      const injuredByTeam = _.pipe([
+        _.filter('injured'),
+        _.reduce(
+          (prev, curr) => ({
+            ...prev,
+            [curr.playerTeamBasketballReferenceId]: [
+              ...(prev[curr.playerTeamBasketballReferenceId] || []),
+              {
+                name: formatName(curr.name),
+                position: curr.position,
+                injury: curr.injury
+              }
+            ]
+          }),
+          {}
+        ),
+        _.mapValues(injured => ({ injured }))
+      ])(data);
+
+      const returnedLineups = _.merge(startersByTeam, injuredByTeam);
+      const trueLineups = await getLineups();
+
+      _.keys(trueLineups).forEach(team => {
+        if (
+          _.getOr(0, [team, 'starters', 'length'], returnedLineups) !==
+          _.getOr(0, [team, 'starters', 'length'], trueLineups)
+        ) {
+          console.warn({
+            type: 'starters',
+            team,
+            returned: returnedLineups[team].starters,
+            actual: trueLineups[team].starters
+          });
+        }
+        if (
+          _.getOr(0, [team, 'injured', 'length'], returnedLineups) !==
+          _.getOr(0, [team, 'injured', 'length'], trueLineups)
+        ) {
+          console.error({
+            type: 'injured',
+            team,
+            returned: returnedLineups[team].injured,
+            actual: trueLineups[team].injured
+          });
+        }
+      });
+      return data;
+    })
+    .then(data => data.filter(datum => !datum.injured))
     .then(predictWithModel)
     .then(
       _.map(it => {
