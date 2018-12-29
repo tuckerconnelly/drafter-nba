@@ -279,9 +279,7 @@ if (process.env.TASK === 'getPredictions') {
         };
       })
     )
-    // PG, SG, SF, PF, C, G, F, UTIL
-    // .then(_.filter(it => it.rosterPositions.includes('G')))
-    .then(_.sortBy(['dollarsPerFantasyPoint']))
+    .then(_.reverse(_.sortBy(['salaryDollars'])))
     .then(
       _.map(it => ({
         name: it.name,

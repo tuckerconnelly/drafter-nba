@@ -5,8 +5,8 @@ const _a = require('./lib/lodash-a');
 const { html, cheerioText } = require('./helpers');
 const { wsq } = require('./services');
 
-// const MIN_SEASON = 2018;
-const MIN_SEASON = 2003;
+const MIN_SEASON = 2019;
+// const MIN_SEASON = 2003;
 
 const _scrapeTeamSeason = _a.pipe([
   _.tap(console.log),

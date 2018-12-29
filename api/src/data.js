@@ -62,6 +62,7 @@ async function getDataFromPg({ limit = null, offset = 0 } = {}) {
     	select player_basketball_reference_id
     	from teams_players
     	where season = 2019
+      and currently_on_this_team = true
     )
     order by gp.player_basketball_reference_id asc, g.time_of_game asc
     limit ${limit}

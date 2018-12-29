@@ -139,9 +139,9 @@ global.fetch = url => ({
 async function loadModel() {
   console.time('Load model');
   const modelJson = JSON.parse(
-    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1546029677096/model.json`, 'utf8')
+    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1546066429051/model.json`, 'utf8')
   );
-  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1546029677096/weights.bin`;
+  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1546066429051/weights.bin`;
 
   const model = await tf.models.modelFromJSON(modelJson);
   console.timeEnd('Load model');
