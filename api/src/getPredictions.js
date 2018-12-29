@@ -43,7 +43,8 @@ const ABBREVIATIONS = {
   NY: 'NYK',
   LAL: 'LAL',
   PHI: 'PHI',
-  UTA: 'UTA'
+  UTA: 'UTA',
+  OKC: 'OKC'
 };
 
 const parseSalaryFile = _a.pipe([
@@ -124,8 +125,25 @@ const embellishSalaryData = memoizeFs(
 
       const statsLastGames = await getStatsLastGamesFromPg({
         playerBasketballReferenceId: inDbPlayer.basketballReferenceId,
-        teamBasketballReferenceId: s.playerTeamBasketballReferenceId
+        season: 2019,
+        currentGameDate: new Date()
       });
+
+      const starter = _.getOr(
+        false,
+        'starter',
+        await wsq.l`
+          select gp.starter
+          from games_players gp
+          inner join games g
+            on g.basketball_reference_id = gp.game_basketball_reference_id
+          where gp.player_basketball_reference_id = ${
+            inDbPlayer.basketballReferenceId
+          }
+          order by g.time_of_game desc
+          limit 1
+      `.one()
+      );
 
       bar.tick(1);
 
@@ -153,7 +171,8 @@ const embellishSalaryData = memoizeFs(
         experience: inDbPlayer.experience,
         playingAtHome:
           s.playerTeamBasketballReferenceId === s.homeTeamBasketballReferenceId,
-        ...statsLastGames
+        ...statsLastGames,
+        starter
       };
     })(salaryData);
   }
@@ -167,6 +186,8 @@ const predictWithModel = memoizeFs(
 if (process.env.TASK === 'getPredictions') {
   parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
     .then(embellishSalaryData)
+    // TODO Replace with injured/inactive players
+    .then(data => data.filter(datum => datum.fantasyPointsLastGames.length > 0))
     .then(predictWithModel)
     .then(
       _.map(it => {
