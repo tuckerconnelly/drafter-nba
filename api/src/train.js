@@ -39,12 +39,6 @@ async function train({ finalModel = false } = {}) {
   const model = tf.sequential();
 
   model.add(tf.layers.inputLayer({ inputShape: features }));
-  // model.add(tf.layers.dense({ units: 512, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.25 }));
-  // model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.5 }));
-  // model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
-  // model.add(tf.layers.dropout({ rate: 0.5 }));
   model.add(tf.layers.dense({ units: 420, activation: 'relu' }));
   model.add(tf.layers.dropout({ rate: 0.25 }));
   model.add(tf.layers.dense({ units: 420, activation: 'relu' }));

@@ -1,26 +1,9 @@
 const _ = require('lodash/fp');
 const cheerio = require('cheerio');
-const chrono = require('chrono-node');
 
 const _a = require('./lib/lodash-a');
 const { html, cheerioText } = require('./helpers');
-const { wsq } = require('./services');
-
-const suffixes = ['Jr.', 'II', 'III', 'IV', 'V'];
-
-function formatName(name) {
-  const parts = _.split(' ', _.trim(name));
-  const first = _.head(parts)[0];
-  let last = _.last(parts);
-
-  if (suffixes.includes(last)) {
-    last = parts[parts.length - 2];
-  }
-
-  return `${first}. ${last}`;
-}
-
-exports.formatName = formatName;
+const { formatPlayerName } = require('./data');
 
 const ABBREVIATIONS = {
   NO: 'NOP',
@@ -82,7 +65,7 @@ function getLineups() {
                 cheerio.load,
                 $ => ({
                   position: _.trim($('.lineup__pos').text()),
-                  name: formatName($('.lineup__pos + a').text()),
+                  name: formatPlayerName($('.lineup__pos + a').text()),
                   injury: _.trim($('.lineup__inj').text()) || null
                 })
               ])
@@ -95,7 +78,7 @@ function getLineups() {
                 cheerio.load,
                 $ => ({
                   position: _.trim($('.lineup__pos').text()),
-                  name: formatName($('.lineup__pos + a').text()),
+                  name: formatPlayerName($('.lineup__pos + a').text()),
                   injury: _.trim($('.lineup__inj').text()) || null
                 })
               ])

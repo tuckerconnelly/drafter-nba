@@ -10,10 +10,14 @@ const Table = require('cli-table');
 
 const _a = require('./lib/lodash-a');
 const memoizeFs = require('./lib/memoize-fs');
+const {
+  formatPlayerName,
+  getPlayersByTeamAndFormattedName,
+  getStatsLastGamesFromPg
+} = require('./data');
 const { wsq } = require('./services');
-const { getStatsLastGamesFromPg, calculateFantasyScore } = require('./data');
 const { predict, loadModel } = require('./train');
-const { formatName, getLineups } = require('./getLineups');
+const { getLineups } = require('./getLineups');
 
 const ABBREVIATIONS = {
   NO: 'NOP',
@@ -106,17 +110,23 @@ const embellishSalaryData = memoizeFs(
       total: salaryData.length
     });
 
+    const playersByTeamAndFormattedName = await getPlayersByTeamAndFormattedName();
     const lineups = await getLineups();
 
     return _a.mapBatches(10, async s => {
       const inDbPlayer = await wsq.l`
-      select p.basketball_reference_id, p.birth_country, p.date_of_birth, tp.experience, tp.position
-      from players p
-      inner join teams_players tp
-        on tp.player_basketball_reference_id = p.basketball_reference_id
-        and tp.season = '2019'
-      where p.name = ${s.name}
-    `.one();
+          select
+            p.basketball_reference_id,
+            p.birth_country,
+            p.date_of_birth,
+            tp.experience,
+            tp.position
+          from players p
+          inner join teams_players tp
+            on tp.player_basketball_reference_id = p.basketball_reference_id
+            and tp.season = '2019'
+          where p.name = ${s.name}
+      `.one();
 
       if (!inDbPlayer) {
         throw new Error(
@@ -142,10 +152,32 @@ const embellishSalaryData = memoizeFs(
         );
       }
 
-      const starter = _.find({ name: formatName(s.name) })(teamRoster.starters);
-      const injured = _.find({ name: formatName(s.name) })(teamRoster.injured);
+      const starter = _.find({ name: formatPlayerName(s.name) })(
+        teamRoster.starters
+      );
+      const injured = _.find({ name: formatPlayerName(s.name) })(
+        teamRoster.injured
+      );
 
       bar.tick(1);
+
+      const awayStarters = lineups[
+        s.awayTeamBasketballReferenceId
+      ].starters.map(
+        starter =>
+          playersByTeamAndFormattedName[
+            `${s.awayTeamBasketballReferenceId} ${starter.name}`
+          ].basketballReferenceId
+      );
+
+      const homeStarters = lineups[
+        s.homeTeamBasketballReferenceId
+      ].starters.map(
+        starter =>
+          playersByTeamAndFormattedName[
+            `${s.homeTeamBasketballReferenceId} ${starter.name}`
+          ].basketballReferenceId
+      );
 
       return {
         name: s.name,
@@ -159,7 +191,6 @@ const embellishSalaryData = memoizeFs(
             ? s.awayTeamBasketballReferenceId
             : s.homeTeamBasketballReferenceId,
         position: s.positions[0],
-        birthCountry: inDbPlayer.birthCountry,
         ageAtTimeOfGame: moment(s.timeOfGame).diff(
           moment(inDbPlayer.dateOfBirth),
           'years'
@@ -175,129 +206,137 @@ const embellishSalaryData = memoizeFs(
         starter: !!starter,
         injured: !!injured,
         injury:
-          _.getOr(null, 'injury', starter) || _.getOr(null, 'injury', injured)
+          _.getOr(null, 'injury', starter) || _.getOr(null, 'injury', injured),
+        awayStarters,
+        homeStarters
       };
     })(salaryData);
   }
 );
+
+async function checkStarters(data) {
+  const startersByTeam = _.pipe([
+    _.filter('starter'),
+    _.reduce(
+      (prev, curr) => ({
+        ...prev,
+        [curr.playerTeamBasketballReferenceId]: [
+          ...(prev[curr.playerTeamBasketballReferenceId] || []),
+          {
+            name: formatPlayerName(curr.name),
+            position: curr.position,
+            injury: curr.injury
+          }
+        ]
+      }),
+      {}
+    ),
+    _.mapValues(starters => ({ starters }))
+  ])(data);
+
+  const injuredByTeam = _.pipe([
+    _.filter('injured'),
+    _.reduce(
+      (prev, curr) => ({
+        ...prev,
+        [curr.playerTeamBasketballReferenceId]: [
+          ...(prev[curr.playerTeamBasketballReferenceId] || []),
+          {
+            name: formatPlayerName(curr.name),
+            position: curr.position,
+            injury: curr.injury
+          }
+        ]
+      }),
+      {}
+    ),
+    _.mapValues(injured => ({ injured }))
+  ])(data);
+
+  const returnedLineups = _.merge(startersByTeam, injuredByTeam);
+  const trueLineups = await getLineups();
+
+  _.keys(trueLineups).forEach(team => {
+    if (
+      _.getOr(0, [team, 'starters', 'length'], returnedLineups) !==
+      _.getOr(0, [team, 'starters', 'length'], trueLineups)
+    ) {
+      console.warn({
+        type: 'starters',
+        team,
+        returned: returnedLineups[team].starters,
+        actual: trueLineups[team].starters
+      });
+    }
+    if (
+      _.getOr(0, [team, 'injured', 'length'], returnedLineups) !==
+      _.getOr(0, [team, 'injured', 'length'], trueLineups)
+    ) {
+      console.error({
+        type: 'injured',
+        team,
+        returned: returnedLineups[team].injured,
+        actual: trueLineups[team].injured
+      });
+    }
+  });
+
+  return data;
+}
 
 const predictWithModel = memoizeFs(
   path.join(__dirname, '../../tmp/predictWithModel.json'),
   async data => predict(await loadModel(), data)
 );
 
+function outputTable(data) {
+  const tableData = _.pipe([
+    _.map(it => {
+      return {
+        name: `${it.name.split(' ')[0][0]}.${it.name
+          .split(' ')
+          .slice(1)
+          .join(' ')}`,
+        rosterPositions: it.rosterPositions,
+        salaryDollars: it.salaryDollars,
+        difference: it._predictions.dkFantasyPoints - it.pointsPerGame,
+        pointsPerGame: it.pointsPerGame,
+        predictedFantasyScore: it._predictions.dkFantasyPoints,
+        dollarsPerFantasyPoint: Math.round(
+          it.salaryDollars / it._predictions.dkFantasyPoints
+        ),
+        dkFantasyPointsLastGames: it.dkfantasyPointsLastGames.join(',')
+      };
+    }),
+    _.sortBy(['salaryDollars']),
+    _.reverse,
+    _.map(it => ({
+      name: it.name,
+      pos: it.rosterPositions.join(','),
+      sal: it.salaryDollars,
+      diff: it.difference,
+      ppg: it.pointsPerGame,
+      pred: it.predictedFantasyScore,
+      dpfp: it.dollarsPerFantasyPoint,
+      fplg: it.fantasyPointsLastGames
+    }))
+  ])(data);
+
+  const table = new Table({
+    head: _.keys(tableData),
+    colWidths: [14, 14, 8, 6, 6, 6, 8, 20]
+  });
+  table.push(...tableData.map(_.values));
+  console.log(table.toString());
+
+  return data;
+}
+
 if (process.env.TASK === 'getPredictions') {
   parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
     .then(embellishSalaryData)
-    .then(async data => {
-      const startersByTeam = _.pipe([
-        _.filter('starter'),
-        _.reduce(
-          (prev, curr) => ({
-            ...prev,
-            [curr.playerTeamBasketballReferenceId]: [
-              ...(prev[curr.playerTeamBasketballReferenceId] || []),
-              {
-                name: formatName(curr.name),
-                position: curr.position,
-                injury: curr.injury
-              }
-            ]
-          }),
-          {}
-        ),
-        _.mapValues(starters => ({ starters }))
-      ])(data);
-
-      const injuredByTeam = _.pipe([
-        _.filter('injured'),
-        _.reduce(
-          (prev, curr) => ({
-            ...prev,
-            [curr.playerTeamBasketballReferenceId]: [
-              ...(prev[curr.playerTeamBasketballReferenceId] || []),
-              {
-                name: formatName(curr.name),
-                position: curr.position,
-                injury: curr.injury
-              }
-            ]
-          }),
-          {}
-        ),
-        _.mapValues(injured => ({ injured }))
-      ])(data);
-
-      const returnedLineups = _.merge(startersByTeam, injuredByTeam);
-      const trueLineups = await getLineups();
-
-      _.keys(trueLineups).forEach(team => {
-        if (
-          _.getOr(0, [team, 'starters', 'length'], returnedLineups) !==
-          _.getOr(0, [team, 'starters', 'length'], trueLineups)
-        ) {
-          console.warn({
-            type: 'starters',
-            team,
-            returned: returnedLineups[team].starters,
-            actual: trueLineups[team].starters
-          });
-        }
-        if (
-          _.getOr(0, [team, 'injured', 'length'], returnedLineups) !==
-          _.getOr(0, [team, 'injured', 'length'], trueLineups)
-        ) {
-          console.error({
-            type: 'injured',
-            team,
-            returned: returnedLineups[team].injured,
-            actual: trueLineups[team].injured
-          });
-        }
-      });
-      return data;
-    })
+    .then(checkStarters)
     .then(data => data.filter(datum => !datum.injured))
     .then(predictWithModel)
-    .then(
-      _.map(it => {
-        const predictedFantasyScore = calculateFantasyScore(it._predictions);
-        return {
-          name: `${it.name.split(' ')[0][0]}.${it.name
-            .split(' ')
-            .slice(1)
-            .join(' ')}`,
-          rosterPositions: it.rosterPositions,
-          salaryDollars: it.salaryDollars,
-          difference: predictedFantasyScore - it.pointsPerGame,
-          pointsPerGame: it.pointsPerGame,
-          predictedFantasyScore: predictedFantasyScore,
-          dollarsPerFantasyPoint: Math.round(
-            it.salaryDollars / predictedFantasyScore
-          ),
-          fantasyPointsLastGames: it.fantasyPointsLastGames.join(',')
-        };
-      })
-    )
-    .then(_.reverse(_.sortBy(['salaryDollars'])))
-    .then(
-      _.map(it => ({
-        name: it.name,
-        pos: it.rosterPositions.join(','),
-        sal: it.salaryDollars,
-        diff: it.difference,
-        ppg: it.pointsPerGame,
-        pred: it.predictedFantasyScore,
-        dpfp: it.dollarsPerFantasyPoint,
-        fplg: it.fantasyPointsLastGames
-      }))
-    )
-    .then(data => {
-      const table = new Table({
-        head: _.keys(data[0]),
-        colWidths: [14, 14, 8, 6, 6, 6, 8, 20]
-      });
-      table.push(...data.map(_.values));
-      console.log(table.toString());
-    });
+    .then(outputTable);
 }

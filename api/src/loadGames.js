@@ -5,6 +5,7 @@ const moment = require('moment');
 const _a = require('./lib/lodash-a');
 const { html, cheerioText } = require('./helpers');
 const { wsq } = require('./services');
+const { cacheSingleGame, cacheSingleGamesPlayer } = require('./data');
 
 const numberFromColumn = column =>
   _.pipe([_.get(['children', column]), cheerioText, _.toInteger]);
@@ -72,10 +73,11 @@ _a.pipe([
         _.flatMap(
           day =>
             `https://www.basketball-reference.com/boxscores/?month=${month}&day=${day}&year=${year}`,
-          _.range(1, 31)
+          _.range(1, 32)
         ),
       // NOTE Start 2002 at month 8, the beginning of the 2003 season
-      _.range(year === 2018 ? 12 : 12, 13)
+      // _.range(year === 2002 ? 10 : 1, 13)
+      _.range(year === 2018 ? 12 : 13)
     )
   ),
 
@@ -165,14 +167,14 @@ _a.pipe([
                   scrapedGame
                 ),
                 season:
-                  moment(scrapedGame.timeOfGame).month() > 9
+                  moment(scrapedGame.timeOfGame).month() > 7
                     ? moment(scrapedGame.timeOfGame).year() + 1
                     : moment(scrapedGame.timeOfGame).year()
               }).return`*`.one();
             }
 
             const gamesPlayers = await _a.mapSequential(async gp => {
-              const inDbGp = await wsq.from`games_players`
+              let inDbGp = await wsq.from`games_players`
                 .where(
                   _.pick(
                     [
@@ -186,11 +188,21 @@ _a.pipe([
 
               if (inDbGp) return inDbGp;
 
-              return await wsq.from`games_players`.insert(gp).return`*`.one();
+              inDbGp = await wsq.from`games_players`.insert(gp).return`*`.one();
+
+              await cacheSingleGamesPlayer({
+                ...inDbGp,
+                season: game.season,
+                timeOfGame: game.timeOfGame
+              });
+
+              return inDbGp;
             })([
               ...scrapedGame.awayGamesPlayers,
               ...scrapedGame.homeGamesPlayers
             ]);
+
+            await cacheSingleGame(game);
 
             return { game, gamesPlayers };
           }
@@ -201,5 +213,5 @@ _a.pipe([
 
   // // DEBUG
   // _.tap(it => console.dir(it, { depth: 6 }))
+  // ])(_.range(2002, 2019));
 ])(_.range(2018, 2019));
-// ])(_.range(2018, 2019));
