@@ -106,7 +106,6 @@ async function getStatsLastGamesFromPg({
       )
     and g.time_of_game < ${currentGameDate}
     order by g.time_of_game desc
-    limit 7
   `;
 
   return {

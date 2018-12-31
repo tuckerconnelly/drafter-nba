@@ -15,14 +15,7 @@ const Combinatorics = require('js-combinatorics');
 
 const _a = require('./lib/lodash-a');
 const memoizeFs = require('./lib/memoize-fs');
-const {
-  formatPlayerName,
-  getPlayersByTeamAndFormattedName,
-  getStatsLastGamesFromPg
-} = require('./data');
 const { wsq } = require('./services');
-const { predict, loadModel } = require('./train');
-const { getLineups } = require('./getLineups');
 
 const ABBREVIATIONS = {
   NO: 'NOP',
@@ -107,16 +100,19 @@ const parseSalaryFile = _a.pipe([
   )
 ]);
 
+function _generateGameId(homeTeamBasketballReferenceId) {
+  return `${moment()
+    .subtract(1, 'day')
+    .format('YYYYMMDD')}0${homeTeamBasketballReferenceId}`;
+}
+
 const embellishSalaryData = memoizeFs(
-  path.join(__dirname, '../../tmp/embellishSalaryData.json'),
+  path.join(__dirname, '../../tmp/idealEmbellishSalaryData.json'),
   async salaryData => {
     const bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
       width: 40,
       total: salaryData.length
     });
-
-    const playersByTeamAndFormattedName = await getPlayersByTeamAndFormattedName();
-    const lineups = await getLineups();
 
     return _a.mapBatches(10, async s => {
       const inDbPlayer = await wsq.l`
@@ -125,11 +121,17 @@ const embellishSalaryData = memoizeFs(
             p.birth_country,
             p.date_of_birth,
             tp.experience,
-            tp.position
+            tp.position,
+            gpc.dk_fantasy_points
           from players p
           inner join teams_players tp
             on tp.player_basketball_reference_id = p.basketball_reference_id
             and tp.season = '2019'
+          left join games_players_computed gpc
+            on gpc.game_basketball_reference_id = ${_generateGameId(
+              s.homeTeamBasketballReferenceId
+            )}
+            and gpc.player_basketball_reference_id = p.basketball_reference_id
           where p.name = ${s.name}
       `.one();
 
@@ -141,48 +143,7 @@ const embellishSalaryData = memoizeFs(
         );
       }
 
-      const statsLastGames = await getStatsLastGamesFromPg({
-        playerBasketballReferenceId: inDbPlayer.basketballReferenceId,
-        season: 2019,
-        currentGameDate: new Date()
-      });
-
-      const teamRoster = lineups[s.playerTeamBasketballReferenceId];
-
-      if (!teamRoster) {
-        throw new Error(
-          `Team roster not found in lineups: ${
-            s.playerTeamBasketballReferenceId
-          }`
-        );
-      }
-
-      const starter = _.find({ name: formatPlayerName(s.name) })(
-        teamRoster.starters
-      );
-      const injured = _.find({ name: formatPlayerName(s.name) })(
-        teamRoster.injured
-      );
-
       bar.tick(1);
-
-      const awayStarters = lineups[
-        s.awayTeamBasketballReferenceId
-      ].starters.map(
-        starter =>
-          playersByTeamAndFormattedName[
-            `${s.awayTeamBasketballReferenceId} ${starter.name}`
-          ].basketballReferenceId
-      );
-
-      const homeStarters = lineups[
-        s.homeTeamBasketballReferenceId
-      ].starters.map(
-        starter =>
-          playersByTeamAndFormattedName[
-            `${s.homeTeamBasketballReferenceId} ${starter.name}`
-          ].basketballReferenceId
-      );
 
       return {
         name: s.name,
@@ -207,91 +168,10 @@ const embellishSalaryData = memoizeFs(
         experience: inDbPlayer.experience,
         playingAtHome:
           s.playerTeamBasketballReferenceId === s.homeTeamBasketballReferenceId,
-        ...statsLastGames,
-        starter: !!starter,
-        injured: !!injured,
-        injury:
-          _.getOr(null, 'injury', starter) || _.getOr(null, 'injury', injured),
-        awayStarters,
-        homeStarters
+        dkFantasyPoints: inDbPlayer.dkFantasyPoints
       };
     })(salaryData);
   }
-);
-
-async function checkStarters(data) {
-  const startersByTeam = _.pipe([
-    _.filter('starter'),
-    _.reduce(
-      (prev, curr) => ({
-        ...prev,
-        [curr.playerTeamBasketballReferenceId]: [
-          ...(prev[curr.playerTeamBasketballReferenceId] || []),
-          {
-            name: formatPlayerName(curr.name),
-            position: curr.position,
-            injury: curr.injury
-          }
-        ]
-      }),
-      {}
-    ),
-    _.mapValues(starters => ({ starters }))
-  ])(data);
-
-  const injuredByTeam = _.pipe([
-    _.filter('injured'),
-    _.reduce(
-      (prev, curr) => ({
-        ...prev,
-        [curr.playerTeamBasketballReferenceId]: [
-          ...(prev[curr.playerTeamBasketballReferenceId] || []),
-          {
-            name: formatPlayerName(curr.name),
-            position: curr.position,
-            injury: curr.injury
-          }
-        ]
-      }),
-      {}
-    ),
-    _.mapValues(injured => ({ injured }))
-  ])(data);
-
-  const returnedLineups = _.merge(startersByTeam, injuredByTeam);
-  const trueLineups = await getLineups();
-
-  _.keys(returnedLineups).forEach(team => {
-    if (
-      _.getOr(0, [team, 'starters', 'length'], returnedLineups) !==
-      _.getOr(0, [team, 'starters', 'length'], trueLineups)
-    ) {
-      console.warn({
-        type: 'starters',
-        team,
-        returned: returnedLineups[team].starters,
-        actual: trueLineups[team].starters
-      });
-    }
-    if (
-      _.getOr(0, [team, 'injured', 'length'], returnedLineups) !==
-      _.getOr(0, [team, 'injured', 'length'], trueLineups)
-    ) {
-      console.error({
-        type: 'injured',
-        team,
-        returned: returnedLineups[team].injured,
-        actual: trueLineups[team].injured
-      });
-    }
-  });
-
-  return data;
-}
-
-const predictWithModel = memoizeFs(
-  path.join(__dirname, '../../tmp/predictWithModel.json'),
-  async data => predict(await loadModel(), data)
 );
 
 function outputTable(data) {
@@ -304,31 +184,24 @@ function outputTable(data) {
           .join(' ')}`,
         rosterPositions: it.rosterPositions,
         salaryDollars: it.salaryDollars,
-        difference: it._predictions.dkFantasyPoints - it.pointsPerGame,
         pointsPerGame: it.pointsPerGame,
-        predictedFantasyScore: it._predictions.dkFantasyPoints,
-        dollarsPerFantasyPoint: Math.round(
-          it.salaryDollars / it._predictions.dkFantasyPoints
-        ),
-        dkFantasyPointsLastGames: it.dkFantasyPointsLastGames.join(',')
+        actualFantasyScore: it.dkFantasyPoints
       };
     }),
-    _.sortBy(['dollarsPerFantasyPoint']),
+    _.sortBy(['actualFantasyScore']),
+    _.reverse,
     _.map(it => ({
       name: it.name,
       pos: it.rosterPositions.join(','),
       sal: it.salaryDollars,
-      diff: it.difference,
       ppg: it.pointsPerGame,
-      pred: it.predictedFantasyScore,
-      dpfp: it.dollarsPerFantasyPoint,
-      fplg: it.dkFantasyPointsLastGames
+      act: it.actualFantasyScore || ''
     }))
   ])(data);
 
   const table = new Table({
     head: _.keys(tableData[0]),
-    colWidths: [16, 16, 8, 8, 8, 8, 8, 32]
+    colWidths: [16, 16, 8, 8, 8]
   });
   table.push(...tableData.map(_.values));
   console.log(table.toString());
@@ -363,18 +236,17 @@ function _isValidRoster(roster) {
   );
 }
 
-async function pickLineups(data) {
+async function outputActualBest(data) {
   const players = _.pipe([
     _.map(p => ({
       playerBasketballReferenceId: p.playerBasketballReferenceId,
       rosterPositions: p.rosterPositions,
       name: p.name,
       salaryDollars: p.salaryDollars,
-      dkFantasyPointsExpected: p._predictions.dkFantasyPoints,
-      dollarsPerFantasyPoint: Math.round(
-        p.salaryDollars / p._predictions.dkFantasyPoints
-      )
+      dkFantasyPointsActual: p.dkFantasyPoints,
+      dollarsPerFantasyPoint: Math.round(p.salaryDollars / p.dkFantasyPoints)
     })),
+    _.filter(p => p.dkFantasyPointsActual),
     _.sortBy('dollarsPerFantasyPoint'),
     _.slice(0, 30)
   ])(data);
@@ -390,30 +262,30 @@ async function pickLineups(data) {
     bar.tick(1);
     const salary = _getSalaryOfRoster(rosterPlayers);
     if (salary < MIN_SPEND || salary > BUDGET) continue;
-    const expectedPoints = _getTotalPointsOfRoster(
-      'dkFantasyPointsExpected',
+    const actualPoints = _getTotalPointsOfRoster(
+      'dkFantasyPointsActual',
       rosterPlayers
     );
-    if (expectedPoints < MIN_ACCEPTABLE_POINTS) continue;
+    if (actualPoints < MIN_ACCEPTABLE_POINTS) continue;
     if (!_isValidRoster(rosterPlayers)) continue;
 
     rosters.push({
       players: rosterPlayers,
       salary,
-      expectedPoints
+      actualPoints
     });
   }
 
   const tableData = _.pipe([
-    _.sortBy(['expectedPoints']),
+    _.sortBy(['actualPoints']),
     _.reverse,
-    _.slice(0, 20),
+    _.slice(0, 5),
     _.map(it => ({
       names: it.players
         .map(rp => `${_.padEnd(30, rp.name)} ${rp.salaryDollars}`)
         .join('\n'),
       salary: it.salary,
-      expectedPoints: it.expectedPoints
+      actualPoints: it.actualPoints
     }))
   ])(rosters);
   const table = new Table({
@@ -426,12 +298,9 @@ async function pickLineups(data) {
   return data;
 }
 
-if (process.env.TASK === 'getPredictions') {
+if (process.env.TASK === 'getIdealRoster') {
   parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
     .then(embellishSalaryData)
-    .then(checkStarters)
-    .then(data => data.filter(datum => !datum.injured))
-    .then(predictWithModel)
     .then(outputTable)
-    .then(pickLineups);
+    .then(outputActualBest);
 }
