@@ -521,7 +521,7 @@ async function makeMapFunctions() {
       experience.encode(d.experience),
       d.playingAtHome ? 1 : 0,
       d.starter ? 1 : 0,
-      ...lgEncode(7, dkFantasyPoints.encode, d.dkFantasyPoints),
+      ...lgEncode(7, dkFantasyPoints.encode, d.dkFantasyPointsLastGames),
       ...lgEncode(7, secondsPlayed.encode, d.secondsPlayedLastGames),
       ...players.encode([d.playerBasketballReferenceId]),
       ...teams.encode([d.playerTeamBasketballReferenceId]),
@@ -534,7 +534,7 @@ async function makeMapFunctions() {
   const datumToY = d => [d.dkFantasyPoints];
 
   const yToDatum = y => ({
-    dkFantasyPoints: y[0]
+    dkFantasyPoints: parseFloat((Math.round(y[0] * 4) / 4).toFixed(2))
   });
 
   return { datumToX, datumToY, yToDatum };

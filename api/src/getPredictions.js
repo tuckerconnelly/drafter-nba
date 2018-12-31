@@ -1,5 +1,7 @@
 const path = require('path');
 const fs = require('fs');
+const cluster = require('cluster');
+const os = require('os');
 
 require('@tensorflow/tfjs-node');
 const _ = require('lodash/fp');
@@ -256,7 +258,7 @@ async function checkStarters(data) {
   const returnedLineups = _.merge(startersByTeam, injuredByTeam);
   const trueLineups = await getLineups();
 
-  _.keys(trueLineups).forEach(team => {
+  _.keys(returnedLineups).forEach(team => {
     if (
       _.getOr(0, [team, 'starters', 'length'], returnedLineups) !==
       _.getOr(0, [team, 'starters', 'length'], trueLineups)
@@ -290,6 +292,8 @@ const predictWithModel = memoizeFs(
 );
 
 function outputTable(data) {
+  if (cluster.isWorker) return data;
+
   const tableData = _.pipe([
     _.map(it => {
       return {
@@ -305,11 +309,10 @@ function outputTable(data) {
         dollarsPerFantasyPoint: Math.round(
           it.salaryDollars / it._predictions.dkFantasyPoints
         ),
-        dkFantasyPointsLastGames: it.dkfantasyPointsLastGames.join(',')
+        dkFantasyPointsLastGames: it.dkFantasyPointsLastGames.join(',')
       };
     }),
-    _.sortBy(['salaryDollars']),
-    _.reverse,
+    _.sortBy(['dollarsPerFantasyPoint']),
     _.map(it => ({
       name: it.name,
       pos: it.rosterPositions.join(','),
@@ -318,18 +321,233 @@ function outputTable(data) {
       ppg: it.pointsPerGame,
       pred: it.predictedFantasyScore,
       dpfp: it.dollarsPerFantasyPoint,
-      fplg: it.fantasyPointsLastGames
+      fplg: it.dkFantasyPointsLastGames
     }))
   ])(data);
 
   const table = new Table({
-    head: _.keys(tableData),
-    colWidths: [14, 14, 8, 6, 6, 6, 8, 20]
+    head: _.keys(tableData[0]),
+    colWidths: [16, 16, 8, 8, 8, 8, 8, 32]
   });
   table.push(...tableData.map(_.values));
   console.log(table.toString());
 
   return data;
+}
+
+const MIN_SPEND = 42000;
+const BUDGET = 50000;
+const MIN_ACCEPTABLE_POINTS = 250;
+
+function _getSalaryOfRoster(roster) {
+  return _.values(roster).reduce(
+    (prev, curr) => prev + _.getOr(0, 'salaryDollars', curr),
+    0
+  );
+}
+
+function _getExpectedPointsOfRoster(roster) {
+  return _.values(roster).reduce(
+    (prev, curr) => prev + _.getOr(0, 'dkFantasyPoints', curr),
+    0
+  );
+}
+
+async function pickLineups(data) {
+  const players = _.pipe([
+    _.map(p => ({
+      playerBasketballReferenceId: p.playerBasketballReferenceId,
+      rosterPositions: p.rosterPositions,
+      name: p.name,
+      salaryDollars: p.salaryDollars,
+      dkFantasyPoints: p._predictions.dkFantasyPoints,
+      dollarsPerFantasyPoint: Math.round(
+        p.salaryDollars / p._predictions.dkFantasyPoints
+      )
+    })),
+    _.sortBy('dollarsPerFantasyPoint'),
+    _.slice(0, 27)
+  ])(data);
+
+  const rpFilter = rp =>
+    _.pipe([_.filter(p => p.rosterPositions.includes(rp))]);
+
+  const PGs = rpFilter('PG')(players);
+  const SGs = rpFilter('SG')(players);
+  const SFs = rpFilter('SF')(players);
+  const PFs = rpFilter('PF')(players);
+  const Cs = rpFilter('C')(players);
+  const Gs = rpFilter('G')(players);
+  const Fs = rpFilter('F')(players);
+  const UTILs = rpFilter('UTIL')(players);
+
+  const positionsLengths = [
+    PGs.length,
+    SGs.length,
+    SFs.length,
+    PFs.length,
+    Cs.length,
+    Gs.length,
+    Fs.length,
+    UTILs.length
+  ];
+
+  if (cluster.isWorker) {
+    const workerId = parseInt(cluster.worker.id) - 1;
+    const totalThreads = Math.min(os.cpus().length, PGs.length);
+    const pgsPerThread = Math.ceil(PGs.length / totalThreads);
+    const start = workerId * pgsPerThread;
+    const end = Math.min(PGs.length, start + pgsPerThread);
+
+    let bar;
+
+    if (workerId === 0) {
+      console.log({
+        workerId,
+        totalThreads,
+        pgsPerThread,
+        start,
+        end
+      });
+
+      bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
+        width: 40,
+        total: (end - start) * SGs.length
+      });
+    }
+
+    for (let i = start; i < end; i++) {
+      const pg = PGs[i];
+
+      for (let sg of SGs) {
+        if (bar) bar.tick(1);
+        if ([pg].map(p => p.name).includes(sg.name)) continue;
+
+        for (let sf of SFs) {
+          if ([pg, sg].map(p => p.name).includes(sf.name)) continue;
+
+          for (let pf of PFs) {
+            if ([pg, sg, sf].map(p => p.name).includes(pf.name)) continue;
+            if (_getSalaryOfRoster([pg, sg, sf, pf]) > BUDGET - 4 * 3000)
+              continue;
+
+            for (let c of Cs) {
+              if ([pg, sg, sf, pf].map(p => p.name).includes(c.name)) continue;
+              if (_getSalaryOfRoster([pg, sg, sf, pf, c]) > BUDGET - 3 * 3000)
+                continue;
+
+              for (let g of Gs) {
+                if ([pg, sg, sf, pf, c].map(p => p.name).includes(g.name))
+                  continue;
+                if (
+                  _getSalaryOfRoster([pg, sg, sf, pf, c, g]) >
+                  BUDGET - 2 * 3000
+                )
+                  continue;
+
+                for (let f of Fs) {
+                  if ([pg, sg, sf, pf, c, g].map(p => p.name).includes(f.name))
+                    continue;
+                  if (
+                    _getSalaryOfRoster([pg, sg, sf, pf, c, g, f]) >
+                    BUDGET - 3000
+                  )
+                    continue;
+
+                  for (let util of UTILs) {
+                    if (
+                      [pg, sg, sf, pf, c, g, f]
+                        .map(p => p.name)
+                        .includes(util.name)
+                    )
+                      continue;
+                    const salaryOfRoster = _getSalaryOfRoster([
+                      pg,
+                      sg,
+                      sf,
+                      pf,
+                      c,
+                      g,
+                      f,
+                      util
+                    ]);
+                    if (salaryOfRoster > BUDGET) continue;
+                    if (salaryOfRoster < MIN_SPEND) continue;
+                    const expectedPointsOfRoster = _getExpectedPointsOfRoster([
+                      pg,
+                      sg,
+                      sf,
+                      pf,
+                      c,
+                      g,
+                      f,
+                      util
+                    ]);
+                    if (expectedPointsOfRoster < MIN_ACCEPTABLE_POINTS)
+                      continue;
+                    process.send(
+                      JSON.stringify({
+                        salaryOfRoster,
+                        expectedPointsOfRoster,
+                        players: {
+                          pg,
+                          sg,
+                          sf,
+                          pf,
+                          c,
+                          g,
+                          f,
+                          util
+                        }
+                      })
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    process.exit();
+  }
+
+  console.log(`Master ${process.pid} is running`);
+
+  console.log({
+    positionsLengths,
+    total: positionsLengths.reduce((prev, curr) => prev * curr, 1)
+  });
+
+  let rosters = [];
+
+  const totalThreads = Math.min(os.cpus().length, PGs.length);
+  for (let i = 0; i < totalThreads; i++) cluster.fork();
+
+  let finishedWorkers = 0;
+
+  for (const id in cluster.workers) {
+    cluster.workers[id].on('message', json => {
+      const newRosters = JSON.parse(json);
+      rosters = rosters.concat(newRosters);
+    });
+    cluster.workers[id].on('exit', () => {
+      console.log(`${id} finished`);
+      finishedWorkers++;
+    });
+  }
+
+  while (finishedWorkers < totalThreads) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  console.dir(
+    _.pipe([_.sortBy('expectedPointsOfRoster'), _.reverse, _.slice(0, 20)])(
+      rosters
+    ),
+    { depth: 4 }
+  );
 }
 
 if (process.env.TASK === 'getPredictions') {
@@ -338,5 +556,6 @@ if (process.env.TASK === 'getPredictions') {
     .then(checkStarters)
     .then(data => data.filter(datum => !datum.injured))
     .then(predictWithModel)
-    .then(outputTable);
+    .then(outputTable)
+    .then(pickLineups);
 }

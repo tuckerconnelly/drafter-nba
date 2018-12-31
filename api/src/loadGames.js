@@ -73,11 +73,11 @@ _a.pipe([
         _.flatMap(
           day =>
             `https://www.basketball-reference.com/boxscores/?month=${month}&day=${day}&year=${year}`,
-          _.range(1, 32)
+          _.range(28, 32)
         ),
       // NOTE Start 2002 at month 8, the beginning of the 2003 season
       // _.range(year === 2002 ? 10 : 1, 13)
-      _.range(year === 2018 ? 12 : 13)
+      _.range(year === 2018 ? 12 : 12, 13)
     )
   ),
 
