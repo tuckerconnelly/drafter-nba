@@ -31,7 +31,8 @@
     "recursive-readdir": "^2.2.2",
     "shuffle-seed": "^1.1.6",
     "sqorn": "0.0.45",
-    "sqorn-pg": "0.0.40"
+    "sqorn-pg": "0.0.40",
+    "summary": "^1.0.0"
   },
   "license": "UNLICENSED",
   "devDependencies": {

@@ -10,8 +10,8 @@ create table games_players_computed (
   unique(game_basketball_reference_id, player_basketball_reference_id),
 
   dk_fantasy_points real,
-  dk_fantasy_points_last_games real[],
-  seconds_played_last_games int[]
+  dk_fantasy_points_last_games jsonb default '[]',
+  seconds_played_last_games jsonb default '[]'
 );
 
 create trigger update_updated_at before update
@@ -23,8 +23,8 @@ create table games_computed (
   updated_at timestamp not null default now(),
 
   game_basketball_reference_id text references games(basketball_reference_id) on delete cascade,
-  away_starters text[],
-  home_starters text[]
+  away_starters jsonb default '[]',
+  home_starters jsonb default '[]'
 );
 
 create trigger update_updated_at before update

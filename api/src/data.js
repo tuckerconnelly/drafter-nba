@@ -5,6 +5,7 @@ const _ = require('lodash/fp');
 require('@tensorflow/tfjs-node');
 const tf = require('@tensorflow/tfjs');
 const shuffleSeed = require('shuffle-seed');
+const summary = require('summary');
 
 const _a = require('./lib/lodash-a');
 const { wsq } = require('./services');
@@ -38,6 +39,8 @@ const makeEncoders = function makeEncoders(average, min, max) {
 /*** cacheData ***/
 
 function calculateFantasyScore(stats) {
+  if (!stats.secondsPlayed) return null;
+
   return Math.max(
     0,
     Math.round(
@@ -97,8 +100,8 @@ async function getStatsLastGamesFromPg({
       on gp.game_basketball_reference_id = g.basketball_reference_id
       and gp.player_basketball_reference_id = ${playerBasketballReferenceId}
     inner join teams_players tp
-      on tp.player_basketball_reference_id = gp.player_basketball_reference_id
-      and tp.season = ${season}
+      on tp.player_basketball_reference_id = ${playerBasketballReferenceId}
+      and tp.season = g.season
     where g.season = ${season}
       and (
         g.home_team_basketball_reference_id = tp.team_basketball_reference_id
@@ -126,6 +129,65 @@ async function getStatsLastGamesFromPg({
 
 exports.getStatsLastGamesFromPg = getStatsLastGamesFromPg;
 
+async function teamGetStatsFromLastGamesFromPg({
+  teamBasketballReferenceId,
+  season,
+  currentGameDate
+}) {
+  assert(teamBasketballReferenceId);
+  assert(season);
+  assert(currentGameDate);
+
+  const wins = (await wsq.l`
+    select id
+    from games g
+    where g.season = ${season}
+    and (
+      (g.away_team_basketball_reference_id = ${teamBasketballReferenceId} and g.away_score > g.home_score)
+      or (g.home_team_basketball_reference_id = ${teamBasketballReferenceId} and g.home_score > g.away_score)
+    )
+    and g.time_of_game < ${currentGameDate}
+  `).length;
+
+  const losses = (await wsq.l`
+    select id
+    from games g
+    where g.season = ${season}
+    and (
+      (g.away_team_basketball_reference_id = ${teamBasketballReferenceId} and g.away_score < g.home_score)
+      or (g.home_team_basketball_reference_id = ${teamBasketballReferenceId} and g.home_score < g.away_score)
+    )
+    and g.time_of_game < ${currentGameDate}
+  `).length;
+
+  const dkFantasyPointsAllowedLastGames = (await wsq.l`
+    select sum(gpc.dk_fantasy_points) as dk_fantasy_points_allowed
+    from games_players_computed gpc
+    inner join games g
+      on g.basketball_reference_id = gpc.game_basketball_reference_id
+      and (
+        g.away_team_basketball_reference_id = ${teamBasketballReferenceId}
+        or g.home_team_basketball_reference_id = ${teamBasketballReferenceId}
+      )
+      and g.season = ${season}
+      and g.time_of_game < ${currentGameDate}
+    inner join teams_players tp
+      on tp.player_basketball_reference_id = gpc.player_basketball_reference_id
+      and tp.team_basketball_reference_id != ${teamBasketballReferenceId}
+      and tp.season = ${season}
+    group by g.id
+    order by g.time_of_game desc
+  `).map(row => row.dkFantasyPointsAllowed);
+
+  return {
+    wins,
+    losses,
+    dkFantasyPointsAllowedLastGames
+  };
+}
+
+exports.teamGetStatsFromLastGamesFromPg = teamGetStatsFromLastGamesFromPg;
+
 async function cacheSingleGamesPlayer(gamesPlayer) {
   assert(gamesPlayer.season);
   assert(gamesPlayer.timeOfGame);
@@ -145,14 +207,24 @@ async function cacheSingleGamesPlayer(gamesPlayer) {
     gameBasketballReferenceId: gamesPlayer.gameBasketballReferenceId,
     playerBasketballReferenceId: gamesPlayer.playerBasketballReferenceId,
     dkFantasyPoints: calculateFantasyScore(gamesPlayer),
-    dkFantasyPointsLastGames: statsLastGames.dkFantasyPointsLastGames,
-    secondsPlayedLastGames: statsLastGames.secondsPlayedLastGames
+    dkFantasyPointsLastGames: JSON.stringify(
+      statsLastGames.dkFantasyPointsLastGames
+    ),
+    secondsPlayedLastGames: JSON.stringify(
+      statsLastGames.secondsPlayedLastGames
+    )
   });
 }
 
 exports.cacheSingleGamesPlayer = cacheSingleGamesPlayer;
 
 async function cacheSingleGame(game) {
+  assert(game.basketballReferenceId);
+  assert(game.season);
+  assert(game.timeOfGame);
+  assert(game.awayTeamBasketballReferenceId);
+  assert(game.homeTeamBasketballReferenceId);
+
   const awayStarters = (await wsq.l`
     select gp.player_basketball_reference_id
     from games_players gp
@@ -175,20 +247,123 @@ async function cacheSingleGame(game) {
     and tp.team_basketball_reference_id = ${game.homeTeamBasketballReferenceId}
   `).map(it => it.playerBasketballReferenceId);
 
+  const awayDkFantasyPointsAllowed = (await wsq.l`
+    select sum(gpc.dk_fantasy_points) as dk_fantasy_points_allowed
+    from games_players_computed gpc
+    inner join games g
+      on g.basketball_reference_id = gpc.game_basketball_reference_id
+    inner join teams_players tp
+      on tp.player_basketball_reference_id = gpc.player_basketball_reference_id
+      and tp.team_basketball_reference_id != g.away_team_basketball_reference_id
+      and tp.season = g.season
+    where gpc.game_basketball_reference_id = ${game.basketballReferenceId}
+    group by g.id;
+  `.one()).dkFantasyPointsAllowed;
+
+  const homeDkFantasyPointsAllowed = (await wsq.l`
+    select sum(gpc.dk_fantasy_points) as dk_fantasy_points_allowed
+    from games_players_computed gpc
+    inner join games g
+      on g.basketball_reference_id = gpc.game_basketball_reference_id
+    inner join teams_players tp
+      on tp.player_basketball_reference_id = gpc.player_basketball_reference_id
+      and tp.team_basketball_reference_id != g.home_team_basketball_reference_id
+      and tp.season = g.season
+    where gpc.game_basketball_reference_id = ${game.basketballReferenceId}
+    group by g.id;
+  `.one()).dkFantasyPointsAllowed;
+
+  const {
+    wins: awayWins,
+    losses: awayLosses,
+    dkFantasyPointsAllowedLastGames: awayDkFantasyPointsAllowedLastGames
+  } = await teamGetStatsFromLastGamesFromPg({
+    teamBasketballReferenceId: game.awayTeamBasketballReferenceId,
+    season: game.season,
+    currentGameDate: game.timeOfGame
+  });
+
+  const {
+    wins: homeWins,
+    losses: homeLosses,
+    dkFantasyPointsAllowedLastGames: homeDkFantasyPointsAllowedLastGames
+  } = await teamGetStatsFromLastGamesFromPg({
+    teamBasketballReferenceId: game.homeTeamBasketballReferenceId,
+    season: game.season,
+    currentGameDate: game.timeOfGame
+  });
+
   await wsq.from`games_computed`.delete.where({
     gameBasketballReferenceId: game.basketballReferenceId
   });
 
   await wsq.from`games_computed`.insert({
     gameBasketballReferenceId: game.basketballReferenceId,
-    awayStarters,
-    homeStarters
+    awayStarters: JSON.stringify(awayStarters),
+    homeStarters: JSON.stringify(homeStarters),
+    awayWins,
+    awayLosses,
+    homeWins,
+    homeLosses,
+    awayDkFantasyPointsAllowed,
+    homeDkFantasyPointsAllowed,
+    awayDkFantasyPointsAllowedLastGames: JSON.stringify(
+      awayDkFantasyPointsAllowedLastGames
+    ),
+    homeDkFantasyPointsAllowedLastGames: JSON.stringify(
+      homeDkFantasyPointsAllowedLastGames
+    )
   });
 }
 
 exports.cacheSingleGame = cacheSingleGame;
 
 async function cacheData() {
+  // console.log('Caching games_players');
+  //
+  // const gamesPlayers = await wsq.l`
+  //   select
+  //     gp.game_basketball_reference_id,
+  //     gp.player_basketball_reference_id,
+  //     gp.seconds_played,
+  //     gp.points,
+  //     gp.three_point_field_goals,
+  //     gp.total_rebounds,
+  //     gp.assists,
+  //     gp.steals,
+  //     gp.blocks,
+  //     gp.turnovers,
+  //     gp.free_throws,
+  //
+  //     g.season,
+  //     g.time_of_game
+  //   from games_players gp
+  //   inner join games g
+  //     on g.basketball_reference_id = gp.game_basketball_reference_id
+  //   where not exists (
+  //   	select
+  //   	from games_players_computed gpc
+  //   	where gpc.game_basketball_reference_id = gp.game_basketball_reference_id
+  //   	and gpc.player_basketball_reference_id = gp.player_basketball_reference_id
+  //   )
+  // `;
+  //
+  // const gpBar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
+  //   width: 40,
+  //   total: gamesPlayers.length
+  // });
+  //
+  // await _a.mapBatches(
+  //   10,
+  //   async gp => {
+  //     await cacheSingleGamesPlayer(gp);
+  //     gpBar.tick(1);
+  //   },
+  //   gamesPlayers
+  // );
+
+  // NOTE Caching games depends on games_players already being cached
+
   console.log('Caching games');
 
   const games = await wsq.l`
@@ -196,7 +371,8 @@ async function cacheData() {
       season,
       basketball_reference_id,
       away_team_basketball_reference_id,
-      home_team_basketball_reference_id
+      home_team_basketball_reference_id,
+      time_of_game
     from games
   `;
 
@@ -212,46 +388,6 @@ async function cacheData() {
       gBar.tick(1);
     },
     games
-  );
-
-  console.log('Caching games_players');
-
-  const gamesPlayers = await wsq.l`
-    select
-      gp.game_basketball_reference_id,
-      gp.player_basketball_reference_id,
-      gp.seconds_played,
-      gp.points,
-      gp.three_point_field_goals,
-      gp.total_rebounds,
-      gp.assists,
-      gp.steals,
-      gp.blocks,
-      gp.turnovers,
-      gp.free_throws,
-
-      g.season,
-      g.time_of_game
-    from games_players gp
-    inner join games g
-      on g.basketball_reference_id = gp.game_basketball_reference_id
-    inner join teams_players tp
-      on tp.player_basketball_reference_id = gp.player_basketball_reference_id
-      and tp.currently_on_this_team = true
-  `;
-
-  const gpBar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
-    width: 40,
-    total: gamesPlayers.length
-  });
-
-  await _a.mapBatches(
-    10,
-    async gp => {
-      await cacheSingleGamesPlayer(gp);
-      gpBar.tick(1);
-    },
-    gamesPlayers
   );
 }
 
@@ -290,6 +426,12 @@ async function getDataFromPg({
       gpc.dk_fantasy_points_last_games,
       gc.away_starters,
       gc.home_starters,
+      gc.away_losses,
+      gc.away_wins,
+      gc.home_wins,
+      gc.home_losses,
+      gc.away_dk_fantasy_points_allowed_last_games,
+      gc.home_dk_fantasy_points_allowed_last_games,
 
       gpc.dk_fantasy_points
     from games_players gp
@@ -308,23 +450,38 @@ async function getDataFromPg({
     left join games_computed gc
       on gc.game_basketball_reference_id = g.basketball_reference_id
     where true
+    and gp.seconds_played > 0
     ${
       playerBasketballReferenceId
         ? wsq.raw(
-            `and gp.player_basketball_reference_id = ${playerBasketballReferenceId}`
+            `and gp.player_basketball_reference_id = '${playerBasketballReferenceId}'`
           )
         : wsq.raw('')
     }
     ${
       gameBasketballReferenceId
         ? wsq.raw(
-            `and gp.game_basketball_reference_id = ${gameBasketballReferenceId}`
+            `and gp.game_basketball_reference_id = '${gameBasketballReferenceId}'`
           )
         : wsq.raw('')
     }
     limit ${limit}
     offset ${offset}
   `;
+}
+
+async function _getGameStats() {
+  return await wsq.l`
+    select
+    	avg(gc.away_dk_fantasy_points_allowed) as away_dk_fantasy_points_allowed_avg,
+      min(gc.away_dk_fantasy_points_allowed) as away_dk_fantasy_points_allowed_min,
+      max(gc.away_dk_fantasy_points_allowed) as away_dk_fantasy_points_allowed_max,
+
+    	avg(gc.home_dk_fantasy_points_allowed) as home_dk_fantasy_points_allowed_avg,
+      min(gc.home_dk_fantasy_points_allowed) as home_dk_fantasy_points_allowed_min,
+      max(gc.home_dk_fantasy_points_allowed) as home_dk_fantasy_points_allowed_max
+    from games_computed gc
+  `.one();
 }
 
 async function _getStats() {
@@ -376,6 +533,8 @@ async function _getStats() {
     inner join games_players_computed gpc
       on gpc.game_basketball_reference_id = gp.game_basketball_reference_id
       and gpc.player_basketball_reference_id = gp.player_basketball_reference_id
+    where true
+    and gp.seconds_played > 0
   `.one();
 }
 
@@ -439,6 +598,25 @@ async function _getPositions() {
   );
 }
 
+function standardizedAverageOfNormalLastGames(num, dkLastGames) {
+  const nonNullDkLastGames = dkLastGames.filter(it => it !== null);
+  const summaryStats = summary(nonNullDkLastGames);
+  const lowerFence = summaryStats.mean() - 1.5 * summaryStats.sd() || 0;
+
+  const lastNormalGames = _.pipe([
+    _.filter(it => it >= lowerFence),
+    _.slice(0, num)
+  ])(nonNullDkLastGames);
+
+  const averageOfNormalLastGames = _.mean(lastNormalGames) || 0;
+  const standardAverageOfNormalLastGames =
+    (averageOfNormalLastGames - summaryStats.mean()) / summaryStats.sd();
+
+  return standardAverageOfNormalLastGames || 0;
+}
+
+exports.standardizedAverageOfNormalLastGames = standardizedAverageOfNormalLastGames;
+
 async function makeMapFunctions() {
   const teamsValues = await _getTeams();
   const teams = makeOneHotEncoders(teamsValues);
@@ -481,32 +659,53 @@ async function makeMapFunctions() {
     stats.experienceMax
   );
 
-  const secondsPlayed = makeEncoders(
-    stats.secondsPlayedAvg,
-    stats.secondsPlayedMin,
-    stats.secondsPlayedMax
-  );
-
   const dkFantasyPoints = makeEncoders(
     stats.dkFantasyPointsAvg,
     stats.dkFantasyPointsMin,
     stats.dkFantasyPointsMax
   );
 
+  const gameStats = await _getGameStats();
+
+  const awayDkFantasyPointsAllowed = makeEncoders(
+    gameStats.awayDkFantasyPointsAllowedAvg,
+    gameStats.awayDkFantasyPointsAllowedMin,
+    gameStats.awayDkFantasyPointsAllowedMax
+  );
+
+  const homeDkFantasyPointsAllowed = makeEncoders(
+    gameStats.homeDkFantasyPointsAllowedAvg,
+    gameStats.homeDkFantasyPointsAllowedMin,
+    gameStats.homeDkFantasyPointsAllowedMax
+  );
+
   const lgEncode = _.curry((num, encodeFn, lastGamesStats) => {
-    const average =
-      _.pipe([_.slice(0, num), _.filter(_.isInteger), _.mean])(
-        lastGamesStats
-      ) || 0;
+    if (!lastGamesStats) return _.range(0, num).map(() => null);
+
+    const summaryStats = summary(lastGamesStats.filter(it => it !== null));
+    const lowerFence = summaryStats.mean() - 1.5 * summaryStats.sd() || 0;
+
+    const lastNormalGames = _.pipe([
+      _.filter(_.isInteger),
+      _.filter(it => it >= lowerFence),
+      _.slice(0, num)
+    ])(lastGamesStats);
+
+    const lastNormalGamesAverage = _.mean(lastNormalGames) || 0;
+
+    // console.log({
+    //   lastGamesStats,
+    //   lowerFence,
+    //   lastNormalGames,
+    //   lastNormalGamesAverage
+    // });
 
     return _.map(
       i =>
         encodeFn(
-          lastGamesStats[i] || lastGamesStats[i] === 0
-            ? lastGamesStats[i]
-            : average
+          lastNormalGames[i] ? lastNormalGames[i] : lastNormalGamesAverage
         ),
-      _.range(0, 7)
+      _.range(0, num)
     );
   });
 
@@ -520,13 +719,61 @@ async function makeMapFunctions() {
       experience.encode(d.experience),
       d.playingAtHome ? 1 : 0,
       d.starter ? 1 : 0,
-      ...lgEncode(7, dkFantasyPoints.encode, d.dkFantasyPointsLastGames),
-      ...lgEncode(7, secondsPlayed.encode, d.secondsPlayedLastGames),
+      _.clamp(0, 1, d.awayWins / d.awayLosses || 0),
+      _.clamp(0, 1, d.homeWins / d.homeLosses || 0),
+      // Hot or not
+      standardizedAverageOfNormalLastGames(5, d.dkFantasyPointsLastGames),
+      d.playingAtHome
+        ? standardizedAverageOfNormalLastGames(
+            5,
+            d.awayDkFantasyPointsAllowedLastGames
+          )
+        : standardizedAverageOfNormalLastGames(
+            5,
+            d.homeDkFantasyPointsAllowedLastGames
+          ),
+      d.playingAtHome
+        ? standardizedAverageOfNormalLastGames(
+            5,
+            d.homeDkFantasyPointsAllowedLastGames
+          )
+        : standardizedAverageOfNormalLastGames(
+            5,
+            d.awayDkFantasyPointsAllowedLastGames
+          ),
+      ...lgEncode(5, dkFantasyPoints.encode, d.dkFantasyPointsLastGames),
       ...players.encode([d.playerBasketballReferenceId]),
       ...teams.encode([d.playerTeamBasketballReferenceId]),
       ...teams.encode([d.opposingTeamBasketballReferenceId]),
       ...positions.encode([d.position]),
-      ...players.encode([...d.awayStarters, ...d.homeStarters])
+      ...(d.playingAtHome
+        ? players.encode(d.awayStarters || [])
+        : players.encode(d.homeStarters || [])),
+      ...(d.playingAtHome
+        ? players.encode(d.homeStarters || [])
+        : players.encode(d.awayStarters || [])),
+      ...(d.playingAtHome
+        ? lgEncode(
+            5,
+            awayDkFantasyPointsAllowed.encode,
+            d.awayDkFantasyPointsAllowedLastGames
+          )
+        : lgEncode(
+            5,
+            homeDkFantasyPointsAllowed.encode,
+            d.homeDkFantasyPointsAllowedLastGames
+          )),
+      ...(d.playingAtHome
+        ? lgEncode(
+            5,
+            homeDkFantasyPointsAllowed.encode,
+            d.homeDkFantasyPointsAllowedLastGames
+          )
+        : lgEncode(
+            5,
+            awayDkFantasyPointsAllowed.encode,
+            d.awayDkFantasyPointsAllowedLastGames
+          ))
     ];
   };
 

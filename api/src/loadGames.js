@@ -202,6 +202,9 @@ _a.pipe([
               ...scrapedGame.homeGamesPlayers
             ]);
 
+            // NOTE Caching the game depends on the games_players already
+            // being cached
+
             await cacheSingleGame(game);
 
             return { game, gamesPlayers };
