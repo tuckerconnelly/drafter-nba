@@ -105,40 +105,33 @@ const _scrapeTeamSeason = _a.pipe([
               }).return`*`.one();
             }
 
-            let inDbTeamPlayer = await wsq.from`teams_players`
-              .where(
-                _.pick(
-                  [
-                    'playerBasketballReferenceId',
-                    'teamBasketballReferenceId',
-                    'season'
-                  ],
-                  teamPlayer
-                )
+            await wsq.from`teams_players`.delete.where(
+              _.pick(
+                [
+                  'playerBasketballReferenceId',
+                  'teamBasketballReferenceId',
+                  'season'
+                ],
+                teamPlayer
               )
-              .one();
+            );
 
-            if (!inDbTeamPlayer) {
-              await wsq.from`teams_players`
-                .set({ currentlyOnThisTeam: false })
-                .where(_.pick(['playerBasketballReferenceId'], teamPlayer));
-              inDbTeamPlayer = await wsq.from`teams_players`.insert({
-                ..._.pick(
-                  [
-                    'playerBasketballReferenceId',
-                    'teamBasketballReferenceId',
-                    'season',
-                    'playerNumber',
-                    'position',
-                    'heightInches',
-                    'weightLbs',
-                    'experience'
-                  ],
-                  teamPlayer
-                ),
-                currentlyOnThisTeam: true
-              }).return`*`.one();
-            }
+            const inDbTeamPlayer = await wsq.from`teams_players`.insert({
+              ..._.pick(
+                [
+                  'playerBasketballReferenceId',
+                  'teamBasketballReferenceId',
+                  'season',
+                  'playerNumber',
+                  'position',
+                  'heightInches',
+                  'weightLbs',
+                  'experience'
+                ],
+                teamPlayer
+              ),
+              currentlyOnThisTeam: true
+            }).return`*`.one();
 
             return inDbTeamPlayer;
           }

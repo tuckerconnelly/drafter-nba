@@ -73,11 +73,11 @@ _a.pipe([
         _.flatMap(
           day =>
             `https://www.basketball-reference.com/boxscores/?month=${month}&day=${day}&year=${year}`,
-          _.range(29, 32)
+          _.range(1, 3)
         ),
       // NOTE Start 2002 at month 8, the beginning of the 2003 season
       // _.range(year === 2002 ? 10 : 1, 13)
-      _.range(year === 2018 ? 12 : 12, 13)
+      _.range(year === 2019 ? 1 : 1, 2)
     )
   ),
 
@@ -217,4 +217,4 @@ _a.pipe([
   // // DEBUG
   // _.tap(it => console.dir(it, { depth: 6 }))
   // ])(_.range(2002, 2019));
-])(_.range(2018, 2019));
+])(_.range(2019, 2020));

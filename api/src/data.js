@@ -538,7 +538,7 @@ async function _getStats() {
   `.one();
 }
 
-async function _getPlayers() {
+async function getPlayers() {
   return _.uniq(
     _.map('basketballReferenceId')(
       await wsq.l`
@@ -550,6 +550,8 @@ async function _getPlayers() {
     )
   );
 }
+
+exports.getPlayers = getPlayers;
 
 const suffixes = ['Jr.', 'II', 'III', 'IV', 'V'];
 
@@ -621,7 +623,7 @@ async function makeMapFunctions() {
   const teamsValues = await _getTeams();
   const teams = makeOneHotEncoders(teamsValues);
 
-  const playersValues = await _getPlayers();
+  const playersValues = await getPlayers();
   const players = makeOneHotEncoders(playersValues);
 
   const positionsValues = await _getPositions();
@@ -849,5 +851,36 @@ async function loadData({
 
 exports.loadData = loadData;
 
+async function loadPlayerData({ limit = null } = {}) {
+  const { datumToX, datumToY } = await makeMapFunctions();
+  let players = await getPlayers();
+
+  if (limit) players = players.slice(0, limit);
+
+  const bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
+    width: 40,
+    total: players.length
+  });
+
+  const playerData = [];
+  for (let playerBasketballReferenceId of players) {
+    const data = await getDataFromPg({ playerBasketballReferenceId });
+
+    if (!data.length) continue;
+
+    playerData.push({
+      playerBasketballReferenceId,
+      x: tf.tensor2d(data.map(datumToX)),
+      y: tf.tensor2d(data.map(datumToY))
+    });
+    bar.tick(1);
+  }
+
+  return playerData;
+}
+
+exports.loadPlayerData = loadPlayerData;
+
+if (process.env.TASK === 'loadPlayerData') loadPlayerData();
 if (process.env.TASK === 'cacheData') cacheData();
 if (process.env.TASK === 'loadData') loadData({ maxSamples: 100 });

@@ -5,6 +5,11 @@ const _a = require('./lib/lodash-a');
 const { html, cheerioText } = require('./helpers');
 const { formatPlayerName } = require('./data');
 
+function mapPlayerNames(playerName) {
+  if (playerName === 'W. Hernangomez') return 'G. Hernangomez';
+  return playerName;
+}
+
 const ABBREVIATIONS = {
   NO: 'NOP',
   DAL: 'DAL',
@@ -65,7 +70,9 @@ function getLineups() {
                 cheerio.load,
                 $ => ({
                   position: _.trim($('.lineup__pos').text()),
-                  name: formatPlayerName($('.lineup__pos + a').text()),
+                  name: mapPlayerNames(
+                    formatPlayerName($('.lineup__pos + a').text())
+                  ),
                   injury: _.trim($('.lineup__inj').text()) || null
                 })
               ])
@@ -78,7 +85,9 @@ function getLineups() {
                 cheerio.load,
                 $ => ({
                   position: _.trim($('.lineup__pos').text()),
-                  name: formatPlayerName($('.lineup__pos + a').text()),
+                  name: mapPlayerNames(
+                    formatPlayerName($('.lineup__pos + a').text())
+                  ),
                   injury: _.trim($('.lineup__inj').text()) || null
                 })
               ])

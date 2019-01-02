@@ -313,7 +313,12 @@ async function checkStarters(data) {
 const predictWithModel = memoizeFs(
   path.join(__dirname, '../../tmp/predictWithModel.json'),
   async data => {
-    const res = await predict(await loadModel(), data);
+    const model = await loadModel();
+    let res = await predict(model, data);
+    res = res.map(d => ({
+      ...d,
+      _playerLosses: model.playerLosses[d.playerBasketballReferenceId]
+    }));
 
     fs.writeFileSync(
       path.join(
@@ -340,13 +345,15 @@ function outputTable(data) {
         difference: it._predictions.dkFantasyPoints - it.pointsPerGame,
         pointsPerGame: it.pointsPerGame,
         predictedFantasyScore: it._predictions.dkFantasyPoints,
-        dollarsPerFantasyPoint: Math.round(
-          it.salaryDollars / it._predictions.dkFantasyPoints
+        mae: it._playerLosses.mae,
+        adjustedDollarsPerFantasyPoint: Math.round(
+          (it.salaryDollars - it._playerLosses.mae) /
+            it._predictions.dkFantasyPoints
         ),
         dkFantasyPointsLastGames: it.dkFantasyPointsLastGames.join(',')
       };
     }),
-    _.sortBy(['dollarsPerFantasyPoint']),
+    _.sortBy(['adjustedDollarsPerFantasyPoint']),
     _.map(it => ({
       name: it.name,
       pos: it.rosterPositions.join(','),
@@ -354,14 +361,15 @@ function outputTable(data) {
       diff: it.difference,
       ppg: it.pointsPerGame,
       pred: it.predictedFantasyScore,
-      dpfp: it.dollarsPerFantasyPoint,
+      mae: it.mae,
+      adpfp: it.adjustedDollarsPerFantasyPoint,
       fplg: it.dkFantasyPointsLastGames
     }))
   ])(data);
 
   const table = new Table({
     head: _.keys(tableData[0]),
-    colWidths: [16, 16, 8, 8, 8, 8, 8, 32]
+    colWidths: [16, 16, 8, 8, 8, 8, 8, 8, 32]
   });
   table.push(...tableData.map(_.values));
   console.log(table.toString());
@@ -391,9 +399,31 @@ const _getTotalPointsOfRoster = _.curry(function _getExpectedPointsOfRoster(
 });
 
 function _isValidRoster(roster) {
-  return (
-    _.pipe([_.flatMap(p => p.rosterPositions), _.uniq])(roster).length === 8
-  );
+  const positions = {
+    PG: null,
+    SG: null,
+    SF: null,
+    PF: null,
+    C: null,
+    G: null,
+    F: null,
+    UTIL: null
+  };
+
+  for (let player of roster) {
+    let positionFoundForPlayer = false;
+    for (let rosterPosition of player.rosterPositions) {
+      if (!positions[rosterPosition]) {
+        positions[rosterPosition] = player;
+        positionFoundForPlayer = true;
+        break;
+      }
+    }
+
+    if (!positionFoundForPlayer) return false;
+  }
+
+  return true;
 }
 
 async function pickLineups(data) {
@@ -404,11 +434,11 @@ async function pickLineups(data) {
       name: p.name,
       salaryDollars: p.salaryDollars,
       dkFantasyPointsExpected: p._predictions.dkFantasyPoints,
-      dollarsPerFantasyPoint: Math.round(
-        p.salaryDollars / p._predictions.dkFantasyPoints
+      adjustedDollarsPerFantasyPoint: Math.round(
+        (p.salaryDollars - p._playerLosses.mae) / p._predictions.dkFantasyPoints
       )
     })),
-    _.sortBy('dollarsPerFantasyPoint'),
+    _.sortBy('adjustedDollarsPerFantasyPoint'),
     _.slice(0, 30)
   ])(data);
 
@@ -442,7 +472,7 @@ async function pickLineups(data) {
   });
 
   // Each roster must have 3 different players from the last.
-  const DIFFERENCE_BETWEEN_ROSTERS = 4;
+  const DIFFERENCE_BETWEEN_ROSTERS = 6;
 
   const getRosterPlayers = _.pipe([
     _.get('players'),
@@ -452,6 +482,7 @@ async function pickLineups(data) {
   const formattedRosters = _.pipe([
     _.sortBy(['expectedPoints']),
     _.reverse,
+    _.slice(0, 10000),
     _.reduce((prev, curr) => {
       if (!prev.length) return [curr];
       if (
@@ -496,17 +527,16 @@ if (process.env.TASK === 'getPredictions') {
   parseSalaryFile(path.join(__dirname, '../../tmp/DKSalaries.csv'))
     .then(embellishSalaryData)
     .then(checkStarters)
+    .then(data => data.filter(datum => !datum.injured || datum.starter))
     .then(data =>
-      data
-        .filter(datum => datum.starter || !datum.injured)
-        .filter(datum => {
-          return (
-            _.mean(datum.pointsLastGames.slice(0, 7).map(it => (it ? it : 0))) >
-            5
-          );
-        })
+      data.filter(datum => {
+        return (
+          _.mean(datum.pointsLastGames.slice(0, 7).map(it => (it ? it : 0))) > 5
+        );
+      })
     )
     .then(predictWithModel)
+    .then(data => data.filter(datum => datum._playerLosses))
     .then(outputTable)
     .then(pickLineups);
 }

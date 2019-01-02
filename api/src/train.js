@@ -5,8 +5,9 @@ require('@tensorflow/tfjs-node');
 const tf = require('@tensorflow/tfjs');
 const _ = require('lodash/fp');
 const ProgressBar = require('progress');
+const Table = require('cli-table');
 
-const { makeMapFunctions, loadData } = require('./data');
+const { makeMapFunctions, loadData, loadPlayerData } = require('./data');
 
 const MODEL_SAVE_DIR = path.join(__dirname, '../../tmp');
 if (!fs.existsSync(MODEL_SAVE_DIR)) fs.mkdirSync(MODEL_SAVE_DIR);
@@ -99,7 +100,36 @@ async function train({ finalModel = false } = {}) {
     });
   }
 
+  await calculatePlayerLoss(
+    model,
+    finalModel ? path.join(MODEL_SAVE_PATH, 'player-losses.json') : undefined
+  );
+
   return model;
+}
+
+async function calculatePlayerLoss(model, saveFileTo) {
+  const playerData = await loadPlayerData();
+  const losses = [];
+  for (let datum of playerData) {
+    const [loss, mae] = await model.evaluate(datum.x, datum.y);
+    losses.push({
+      playerBasketballReferenceId: datum.playerBasketballReferenceId,
+      loss: parseFloat(loss.dataSync()[0].toFixed(5)),
+      mae: parseFloat(mae.dataSync()[0].toFixed(3))
+    });
+  }
+
+  if (saveFileTo) {
+    fs.writeFileSync(saveFileTo, JSON.stringify(losses));
+  }
+
+  const table = new Table({
+    head: _.keys(losses[0]),
+    colWidths: [20, 8, 8]
+  });
+  table.push(...losses.map(_.values));
+  console.log(table.toString());
 }
 
 async function predict(model, batch) {
@@ -131,14 +161,27 @@ global.fetch = url => ({
 });
 
 async function loadModel() {
+  const MODEL_NAME = 'model_1546463136953';
+
   console.time('Load model');
   const modelJson = JSON.parse(
-    fs.readFileSync(`${MODEL_SAVE_DIR}/model_1546411301271/model.json`, 'utf8')
+    fs.readFileSync(`${MODEL_SAVE_DIR}/${MODEL_NAME}/model.json`, 'utf8')
   );
-  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/model_1546411301271/weights.bin`;
+  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/${MODEL_NAME}/weights.bin`;
 
   const model = await tf.models.modelFromJSON(modelJson);
   console.timeEnd('Load model');
+
+  const playerLosses = _.keyBy('playerBasketballReferenceId')(
+    JSON.parse(
+      fs.readFileSync(
+        `${MODEL_SAVE_DIR}/${MODEL_NAME}/player-losses.json`,
+        'utf8'
+      )
+    )
+  );
+
+  model.playerLosses = playerLosses;
 
   return model;
 }
