@@ -43,7 +43,7 @@ const ABBREVIATIONS = {
   OKC: 'OKC'
 };
 
-function getLineups() {
+async function getLineups() {
   return _a.pipe([
     html,
     $ => $('.lineup.is-nba:not(.is-tools)'),

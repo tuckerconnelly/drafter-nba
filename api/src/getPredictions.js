@@ -22,7 +22,7 @@ const {
   teamGetStatsFromLastGamesFromPg
 } = require('./data');
 const { wsq } = require('./services');
-const { predict, loadModel } = require('./train');
+const { predict, loadModel, loadAllModels } = require('./train');
 const { getLineups } = require('./getLineups');
 
 const ABBREVIATIONS = {
@@ -310,15 +310,13 @@ async function checkStarters(data) {
   return data;
 }
 
+const MODEL_NAME = 'model_1546544219592';
+
 const predictWithModel = memoizeFs(
   path.join(__dirname, '../../tmp/predictWithModel.json'),
   async data => {
-    const model = await loadModel();
+    const model = await loadModel(MODEL_NAME);
     let res = await predict(model, data);
-    res = res.map(d => ({
-      ...d,
-      _playerLosses: model.playerLosses[d.playerBasketballReferenceId]
-    }));
 
     fs.writeFileSync(
       path.join(
@@ -327,6 +325,37 @@ const predictWithModel = memoizeFs(
       ),
       JSON.stringify(res)
     );
+
+    return res;
+  }
+);
+
+// TODO Make stochastic
+const predictWithPlayerModels = memoizeFs(
+  path.join(__dirname, '../../tmp/predictWithPlayerModels.json'),
+  async data => {
+    const defaultModel = await loadModel(MODEL_NAME);
+    const res = [];
+
+    console.log('predictWithPlayerModels');
+    const bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
+      width: 40,
+      total: data.length
+    });
+
+    for (let d of data) {
+      let playerModel = defaultModel;
+      try {
+        playerModel = await loadModel(
+          `${MODEL_NAME}/${d.playerBasketballReferenceId}`
+        );
+      } catch (err) {
+        console.warn(err);
+      }
+      let predictRes = await predict(playerModel, [d]);
+      res.push(predictRes[0]);
+      bar.tick(1);
+    }
 
     return res;
   }
@@ -345,10 +374,10 @@ function outputTable(data) {
         difference: it._predictions.dkFantasyPoints - it.pointsPerGame,
         pointsPerGame: it.pointsPerGame,
         predictedFantasyScore: it._predictions.dkFantasyPoints,
-        mae: it._playerLosses.mae,
+        mae: it._losses.mae,
         adjustedDollarsPerFantasyPoint: Math.round(
-          (it.salaryDollars - it._playerLosses.mae) /
-            it._predictions.dkFantasyPoints
+          it.salaryDollars /
+            (it._predictions.dkFantasyPoints - it._losses.mae)
         ),
         dkFantasyPointsLastGames: it.dkFantasyPointsLastGames.join(',')
       };
@@ -435,7 +464,7 @@ async function pickLineups(data) {
       salaryDollars: p.salaryDollars,
       dkFantasyPointsExpected: p._predictions.dkFantasyPoints,
       adjustedDollarsPerFantasyPoint: Math.round(
-        (p.salaryDollars - p._playerLosses.mae) / p._predictions.dkFantasyPoints
+        p.salaryDollars / (p._predictions.dkFantasyPoints - p._losses.mae)
       )
     })),
     _.sortBy('adjustedDollarsPerFantasyPoint'),
@@ -535,8 +564,8 @@ if (process.env.TASK === 'getPredictions') {
         );
       })
     )
-    .then(predictWithModel)
-    .then(data => data.filter(datum => datum._playerLosses))
+    // .then(predictWithModel)
+    .then(predictWithPlayerModels)
     .then(outputTable)
     .then(pickLineups);
 }

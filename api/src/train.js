@@ -7,13 +7,28 @@ const _ = require('lodash/fp');
 const ProgressBar = require('progress');
 const Table = require('cli-table');
 
-const { makeMapFunctions, loadData, loadPlayerData } = require('./data');
+const {
+  makeMapFunctions,
+  loadData,
+  loadPlayerData,
+  getPlayers
+} = require('./data');
 
-const MODEL_SAVE_DIR = path.join(__dirname, '../../tmp');
-if (!fs.existsSync(MODEL_SAVE_DIR)) fs.mkdirSync(MODEL_SAVE_DIR);
+let MAX_SAMPLES = undefined;
+let BATCH_SIZE = 5000;
+let EPOCHS = 20;
+let PLAYER_LOSS_PLAYER_LIMIT = undefined;
+let PLAYER_EPOCHS = 20;
+
+if (process.env.DEBUG) {
+  MAX_SAMPLES = 1000;
+  BATCH_SIZE = 50;
+  EPOCHS = 5;
+  PLAYER_EPOCHS = 5;
+  PLAYER_LOSS_PLAYER_LIMIT = 10;
+}
 
 async function train({ finalModel = false } = {}) {
-  const BATCH_SIZE = 5000;
   const {
     trainX,
     trainY,
@@ -26,23 +41,28 @@ async function train({ finalModel = false } = {}) {
     labels,
     trainSamples
   } = await loadData({
+    maxSamples: MAX_SAMPLES,
     validationSplit: finalModel ? 0 : 0.1,
-    testSplit: finalModel ? 0 : 0.1,
-    batchSize: 5000
+    testSplit: finalModel ? 0.05 : 0.1,
+    batchSize: BATCH_SIZE
   });
 
   console.log({ features, labels, trainSamples });
 
-  const MODEL_SAVE_PATH = `${MODEL_SAVE_DIR}/model_${Date.now()}`;
-  const EPOCHS = 20;
+  const MODEL_NAME = `model_${Date.now()}`;
+  const MODEL_SAVE_PATH = `${MODEL_SAVE_DIR}/${MODEL_NAME}`;
   const NUM_BATCHES = Math.ceil(trainSamples / BATCH_SIZE);
 
   const model = tf.sequential();
 
   model.add(tf.layers.inputLayer({ inputShape: features }));
-  model.add(tf.layers.dense({ units: 420, activation: 'relu' }));
+  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
   model.add(tf.layers.dropout({ rate: 0.25 }));
-  model.add(tf.layers.dense({ units: 420, activation: 'relu' }));
+  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
+  model.add(tf.layers.dropout({ rate: 0.25 }));
+  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
+  model.add(tf.layers.dropout({ rate: 0.25 }));
+  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
   model.add(tf.layers.dropout({ rate: 0.25 }));
   model.add(tf.layers.dense({ units: labels, activation: 'linear' }));
 
@@ -73,60 +93,104 @@ async function train({ finalModel = false } = {}) {
       });
     }
 
+    let losses = {};
+
     if (!finalModel) {
-      const [valLoss, valMae] = await model.evaluate(validationX, validationY, {
+      const [rms, mae] = await model.evaluate(validationX, validationY, {
         batchSize: BATCH_SIZE
       });
 
-      console.log({
-        valLoss: parseFloat(valLoss.dataSync()[0].toFixed(5)),
-        valMae: parseFloat(valMae.dataSync()[0].toFixed(3))
-      });
+      losses = {
+        rms: parseFloat(rms.dataSync()[0].toFixed(5)),
+        mae: parseFloat(mae.dataSync()[0].toFixed(3))
+      };
+      console.log(losses);
     }
 
-    if (finalModel) {
-      await model.save(`file://${MODEL_SAVE_PATH}`);
-    }
+    await saveModel(model, MODEL_NAME, losses);
   }
 
-  if (!finalModel) {
-    const [testLoss, testMae] = await model.evaluate(testX, testY, {
-      batchSize: BATCH_SIZE
-    });
+  const [rms, mae] = await model.evaluate(testX, testY, {
+    batchSize: BATCH_SIZE
+  });
 
-    console.log({
-      testLoss: parseFloat(testLoss.dataSync()[0].toFixed(5)),
-      testMae: parseFloat(testMae.dataSync()[0].toFixed(3))
-    });
-  }
+  const losses = {
+    rms: parseFloat(rms.dataSync()[0].toFixed(5)),
+    mae: parseFloat(mae.dataSync()[0].toFixed(3))
+  };
+  console.log(losses);
 
-  await calculatePlayerLoss(
-    model,
-    finalModel ? path.join(MODEL_SAVE_PATH, 'player-losses.json') : undefined
-  );
+  await saveModel(model, MODEL_NAME, losses);
+
+  await makePlayerModels(MODEL_NAME);
 
   return model;
 }
 
-async function calculatePlayerLoss(model, saveFileTo) {
-  const playerData = await loadPlayerData();
-  const losses = [];
-  for (let datum of playerData) {
-    const [loss, mae] = await model.evaluate(datum.x, datum.y);
+async function makePlayerModels(modelName) {
+  let players = await getPlayers();
+  if (PLAYER_LOSS_PLAYER_LIMIT)
+    players = players.slice(0, PLAYER_LOSS_PLAYER_LIMIT);
+
+  const { datumToX, datumToY } = await makeMapFunctions();
+
+  let losses = [];
+
+  console.log('makePlayerModels');
+  const bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
+    width: 40,
+    total: players.length
+  });
+
+  for (let playerBasketballReferenceId of players) {
+    const datum = await loadPlayerData({
+      playerBasketballReferenceId,
+      datumToX,
+      datumToY,
+      testSplit: 0.2
+    });
+
+    if (!datum) continue;
+
+    const model = await loadModel(modelName);
+    model.layers[0].trainable = false;
+    model.layers[1].trainable = false;
+    model.layers[2].trainable = false;
+    model.layers[3].trainable = false;
+    model.layers[4].trainable = false;
+    model.layers[5].trainable = false;
+    model.layers[6].trainable = false;
+    model.compile({
+      optimizer: 'adam',
+      loss: 'meanSquaredError',
+      metrics: ['mae']
+    });
+    for (let i = 0; i < PLAYER_EPOCHS; i++) {
+      await model.trainOnBatch(datum.trainX, datum.trainY);
+    }
+    const [rms, mae] = await model.evaluate(datum.testX, datum.testY);
+
+    await saveModel(model, `${modelName}/${playerBasketballReferenceId}`, {
+      trainSamples: datum.trainX.shape[0],
+      testSamples: datum.trainY.shape[0],
+      rms: parseFloat(rms.dataSync()[0].toFixed(5)),
+      mae: parseFloat(mae.dataSync()[0].toFixed(5))
+    });
+
     losses.push({
-      playerBasketballReferenceId: datum.playerBasketballReferenceId,
-      loss: parseFloat(loss.dataSync()[0].toFixed(5)),
+      playerBasketballReferenceId,
+      trainSamples: datum.trainX.shape[0],
+      testSamples: datum.trainY.shape[0],
+      rms: parseFloat(rms.dataSync()[0].toFixed(5)),
       mae: parseFloat(mae.dataSync()[0].toFixed(3))
     });
+    bar.tick(1);
   }
 
-  if (saveFileTo) {
-    fs.writeFileSync(saveFileTo, JSON.stringify(losses));
-  }
-
+  losses = _.sortBy('rms')(losses);
   const table = new Table({
     head: _.keys(losses[0]),
-    colWidths: [20, 8, 8]
+    colWidths: [20, 8, 8, 8, 8]
   });
   table.push(...losses.map(_.values));
   console.log(table.toString());
@@ -146,7 +210,11 @@ async function predict(model, batch) {
     data => {
       const newData = [];
       for (let i = 0; i < data.length; i++)
-        newData[i] = { ...batch[i], _predictions: data[i] };
+        newData[i] = {
+          ...batch[i],
+          _predictions: data[i],
+          _losses: model.drafterLosses
+        };
       return newData;
     }
   ])(await predictions.data());
@@ -154,34 +222,36 @@ async function predict(model, batch) {
 
 exports.predict = predict;
 
+const MODEL_SAVE_DIR = path.join(__dirname, '../../tmp');
+if (!fs.existsSync(MODEL_SAVE_DIR)) fs.mkdirSync(MODEL_SAVE_DIR);
+
+async function saveModel(model, modelName, losses = {}) {
+  await model.save(`file://${MODEL_SAVE_DIR}/${modelName}`);
+
+  fs.writeFileSync(
+    path.join(`${MODEL_SAVE_DIR}/${modelName}`, 'losses.json'),
+    JSON.stringify(losses)
+  );
+}
+
 global.fetch = url => ({
   text: () => fs.readFileSync(url, 'utf8'),
   json: () => JSON.parse(fs.readFileSync(url, 'utf8')),
   arrayBuffer: () => fs.readFileSync(url).buffer
 });
 
-async function loadModel() {
-  const MODEL_NAME = 'model_1546463136953';
-
-  console.time('Load model');
+async function loadModel(modelName) {
   const modelJson = JSON.parse(
-    fs.readFileSync(`${MODEL_SAVE_DIR}/${MODEL_NAME}/model.json`, 'utf8')
+    fs.readFileSync(`${MODEL_SAVE_DIR}/${modelName}/model.json`, 'utf8')
   );
-  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/${MODEL_NAME}/weights.bin`;
-
+  modelJson.weightsManifest[0].paths[0] = `${MODEL_SAVE_DIR}/${modelName}/weights.bin`;
   const model = await tf.models.modelFromJSON(modelJson);
-  console.timeEnd('Load model');
 
-  const playerLosses = _.keyBy('playerBasketballReferenceId')(
-    JSON.parse(
-      fs.readFileSync(
-        `${MODEL_SAVE_DIR}/${MODEL_NAME}/player-losses.json`,
-        'utf8'
-      )
-    )
+  const losses = JSON.parse(
+    fs.readFileSync(`${MODEL_SAVE_DIR}/${modelName}/losses.json`, 'utf8')
   );
 
-  model.playerLosses = playerLosses;
+  model.drafterLosses = losses;
 
   return model;
 }

@@ -744,7 +744,7 @@ async function makeMapFunctions() {
             d.awayDkFantasyPointsAllowedLastGames
           ),
       ...lgEncode(5, dkFantasyPoints.encode, d.dkFantasyPointsLastGames),
-      ...players.encode([d.playerBasketballReferenceId]),
+      // ...players.encode([d.playerBasketballReferenceId]),
       ...teams.encode([d.playerTeamBasketballReferenceId]),
       ...teams.encode([d.opposingTeamBasketballReferenceId]),
       ...positions.encode([d.position]),
@@ -851,32 +851,25 @@ async function loadData({
 
 exports.loadData = loadData;
 
-async function loadPlayerData({ limit = null } = {}) {
-  const { datumToX, datumToY } = await makeMapFunctions();
-  let players = await getPlayers();
+async function loadPlayerData({
+  playerBasketballReferenceId,
+  datumToX,
+  datumToY,
+  testSplit = 0.2
+} = {}) {
+  const data = await getDataFromPg({ playerBasketballReferenceId });
 
-  if (limit) players = players.slice(0, limit);
+  if (data.length < 10) return null;
 
-  const bar = new ProgressBar('[ :bar ] :current/:total :percent :etas', {
-    width: 40,
-    total: players.length
-  });
+  const trainingSamples = data.length * (1 - testSplit);
 
-  const playerData = [];
-  for (let playerBasketballReferenceId of players) {
-    const data = await getDataFromPg({ playerBasketballReferenceId });
-
-    if (!data.length) continue;
-
-    playerData.push({
-      playerBasketballReferenceId,
-      x: tf.tensor2d(data.map(datumToX)),
-      y: tf.tensor2d(data.map(datumToY))
-    });
-    bar.tick(1);
-  }
-
-  return playerData;
+  return {
+    playerBasketballReferenceId,
+    trainX: tf.tensor2d(data.slice(0, trainingSamples).map(datumToX)),
+    trainY: tf.tensor2d(data.slice(0, trainingSamples).map(datumToY)),
+    testX: tf.tensor2d(data.slice(trainingSamples).map(datumToX)),
+    testY: tf.tensor2d(data.slice(trainingSamples).map(datumToY))
+  };
 }
 
 exports.loadPlayerData = loadPlayerData;
