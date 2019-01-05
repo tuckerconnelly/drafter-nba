@@ -6,6 +6,7 @@ require('@tensorflow/tfjs-node');
 const tf = require('@tensorflow/tfjs');
 const shuffleSeed = require('shuffle-seed');
 const summary = require('summary');
+const moment = require('moment');
 
 const _a = require('./lib/lodash-a');
 const { wsq } = require('./services');
@@ -487,6 +488,9 @@ async function _getGameStats() {
 async function _getStats() {
   return await wsq.l`
     select
+      min(g.time_of_game) as time_of_first_game,
+      max(g.time_of_game) as time_of_most_recent_game,
+
     	avg(floor(date_part('days', g.time_of_game - p.date_of_birth) / 365)) as age_at_time_of_game_avg,
     	min(floor(date_part('days', g.time_of_game - p.date_of_birth) / 365)) as age_at_time_of_game_min,
     	max(floor(date_part('days', g.time_of_game - p.date_of_birth) / 365)) as age_at_time_of_game_max,
@@ -781,11 +785,17 @@ async function makeMapFunctions() {
 
   const datumToY = d => [d.dkFantasyPoints];
 
+  const getTs = date => parseInt(moment(date).format('X'));
+  const timeOfFirstGame = getTs(stats.timeOfFirstGame);
+  const timeOfMostRecentGame = getTs(stats.timeOfMostRecentGame);
+  const datumToWeight = d =>
+    Math.sqrt((timeOfMostRecentGame - getTs(d.timeOfGame)) / timeOfFirstGame);
+
   const yToDatum = y => ({
     dkFantasyPoints: parseFloat((Math.round(y[0] * 4) / 4).toFixed(2))
   });
 
-  return { datumToX, datumToY, yToDatum };
+  return { datumToX, datumToY, datumToWeight, yToDatum };
 }
 
 exports.makeMapFunctions = makeMapFunctions;
@@ -793,6 +803,7 @@ exports.makeMapFunctions = makeMapFunctions;
 async function loadData({
   maxSamples = Infinity,
   batchSize = 5000,
+  trainSplit = 0.8,
   validationSplit = 0.1,
   testSplit = 0.1
 } = {}) {
@@ -804,45 +815,63 @@ async function loadData({
 
   data = shuffleSeed.shuffle(data, 0);
 
-  const trainSamples = Math.round(
-    data.length * (1 - testSplit - validationSplit)
-  );
+  const trainSamples = Math.round(data.length * trainSplit);
   const validationSamples = Math.round(data.length * validationSplit);
   const testSamples = Math.round(data.length * testSplit);
 
   console.time('makeMapFunctions');
-  const { datumToX, datumToY } = await makeMapFunctions();
+  const { datumToX, datumToY, datumToWeight } = await makeMapFunctions();
   console.timeEnd('makeMapFunctions');
 
   console.time('slice and map');
   const trainX = data.slice(0, trainSamples).map(datumToX);
   const trainY = data.slice(0, trainSamples).map(datumToY);
+  const trainWeights = data.slice(0, trainSamples).map(datumToWeight);
+
   const validationX = data
     .slice(trainSamples, trainSamples + validationSamples)
     .map(datumToX);
   const validationY = data
     .slice(trainSamples, trainSamples + validationSamples)
     .map(datumToY);
-  const testX = data.slice(trainSamples + validationSamples).map(datumToX);
-  const testY = data.slice(trainSamples + validationSamples).map(datumToY);
+  const validationWeights = data
+    .slice(trainSamples, trainSamples + validationSamples)
+    .map(datumToWeight);
+
+  const testX = data.slice(-testSamples).map(datumToX);
+  const testY = data.slice(-testSamples).map(datumToY);
+  const testWeights = data.slice(-testSamples).map(datumToWeight);
   console.timeEnd('slice and map');
 
   console.debug({
     trainXLength: trainX.length,
     trainYLength: trainY.length,
+    trainWeightsLength: trainWeights.length,
+
     validationXLength: validationX.length,
     validationYLength: validationY.length,
+    validationWeightsLength: validationWeights.length,
+
     testXLength: testX.length,
-    testYLength: testY.length
+    testYLength: testY.length,
+    testWeightsLength: testWeights.length
   });
 
   return {
     trainX: _.chunk(batchSize, trainX).map(it => tf.tensor2d(it)),
     trainY: _.chunk(batchSize, trainY).map(it => tf.tensor2d(it)),
+    trainWeights: _.chunk(batchSize, trainWeights).map(it => tf.tensor1d(it)),
+
     validationX: validationSamples ? tf.tensor2d(validationX) : null,
     validationY: validationSamples ? tf.tensor2d(validationY) : null,
+    validationWeights: validationSamples
+      ? tf.tensor1d(validationWeights)
+      : null,
+
     testX: testSamples ? tf.tensor2d(testX) : null,
     testY: testSamples ? tf.tensor2d(testY) : null,
+    testWeights: testSamples ? tf.tensor1d(testWeights) : null,
+
     features: trainX[0].length,
     labels: trainY[0].length,
     trainSamples: trainX.length
@@ -855,11 +884,13 @@ async function loadPlayerData({
   playerBasketballReferenceId,
   datumToX,
   datumToY,
-  testSplit = 0.2
+  testSplit = 0.1
 } = {}) {
-  const data = await getDataFromPg({ playerBasketballReferenceId });
+  let data = await getDataFromPg({ playerBasketballReferenceId });
 
   if (data.length < 10) return null;
+
+  data = shuffleSeed.shuffle(data, playerBasketballReferenceId);
 
   const trainingSamples = data.length * (1 - testSplit);
 

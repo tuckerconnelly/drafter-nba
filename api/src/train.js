@@ -42,8 +42,9 @@ async function train({ finalModel = false } = {}) {
     trainSamples
   } = await loadData({
     maxSamples: MAX_SAMPLES,
+    trainSplit: finalModel ? 1 : 0.8,
     validationSplit: finalModel ? 0 : 0.1,
-    testSplit: finalModel ? 0.05 : 0.1,
+    testSplit: finalModel ? 0.2 : 0.1,
     batchSize: BATCH_SIZE
   });
 
@@ -56,14 +57,17 @@ async function train({ finalModel = false } = {}) {
   const model = tf.sequential();
 
   model.add(tf.layers.inputLayer({ inputShape: features }));
-  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
-  model.add(tf.layers.dropout({ rate: 0.25 }));
-  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
-  model.add(tf.layers.dropout({ rate: 0.25 }));
-  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
-  model.add(tf.layers.dropout({ rate: 0.25 }));
-  model.add(tf.layers.dense({ units: 300, activation: 'relu' }));
-  model.add(tf.layers.dropout({ rate: 0.25 }));
+
+  model.add(tf.layers.dense({ units: 420 }));
+  model.add(tf.layers.batchNormalization());
+  model.add(tf.layers.elu());
+  model.add(tf.layers.dropout({ rate: 0.5 }));
+
+  model.add(tf.layers.dense({ units: 420 }));
+  model.add(tf.layers.batchNormalization());
+  model.add(tf.layers.elu());
+  model.add(tf.layers.dropout({ rate: 0.5 }));
+
   model.add(tf.layers.dense({ units: labels, activation: 'linear' }));
 
   model.compile({
@@ -79,46 +83,43 @@ async function train({ finalModel = false } = {}) {
     console.log('\n');
     console.log({ epoch: i + 1, of: EPOCHS });
 
-    const bar = new ProgressBar('[ :bar ] :percent :etas loss::loss mae::mae', {
+    const bar = new ProgressBar('[ :bar ] :percent :etas rmse::rmse', {
       total: NUM_BATCHES,
       width: 40
     });
 
     for (let j = 0; j < NUM_BATCHES; j++) {
-      const [loss, mae] = await model.trainOnBatch(trainX[j], trainY[j]);
+      const [mse] = await model.trainOnBatch(trainX[j], trainY[j]);
 
-      bar.tick(1, {
-        loss: loss.toFixed(5),
-        mae: mae.toFixed(3)
-      });
+      bar.tick(1, { rmse: Math.sqrt(mse).toFixed(3) });
     }
 
     let losses = {};
 
     if (!finalModel) {
-      const [rms, mae] = await model.evaluate(validationX, validationY, {
+      const [mse, mae] = await model.evaluate(validationX, validationY, {
         batchSize: BATCH_SIZE
       });
 
       losses = {
-        rms: parseFloat(rms.dataSync()[0].toFixed(5)),
-        mae: parseFloat(mae.dataSync()[0].toFixed(3))
+        mse: mse.dataSync()[0],
+        rmse: Math.sqrt(mse.dataSync()[0]),
+        mae: mae.dataSync()[0]
       };
-      console.log(losses);
+      console.log(_.mapValues(it => parseFloat(it.toFixed(3)), losses));
     }
-
-    await saveModel(model, MODEL_NAME, losses);
   }
 
-  const [rms, mae] = await model.evaluate(testX, testY, {
+  const [mse, mae] = await model.evaluate(testX, testY, {
     batchSize: BATCH_SIZE
   });
 
   const losses = {
-    rms: parseFloat(rms.dataSync()[0].toFixed(5)),
-    mae: parseFloat(mae.dataSync()[0].toFixed(3))
+    mse: mse.dataSync()[0],
+    rmse: Math.sqrt(mse.dataSync()[0]),
+    mae: mae.dataSync()[0]
   };
-  console.log(losses);
+  console.log(_.mapValues(it => parseFloat(it.toFixed(3)), losses));
 
   await saveModel(model, MODEL_NAME, losses);
 
@@ -127,7 +128,7 @@ async function train({ finalModel = false } = {}) {
   return model;
 }
 
-async function makePlayerModels(modelName) {
+async function makePlayerModels(modelName, finalModel) {
   let players = await getPlayers();
   if (PLAYER_LOSS_PLAYER_LIMIT)
     players = players.slice(0, PLAYER_LOSS_PLAYER_LIMIT);
@@ -147,7 +148,7 @@ async function makePlayerModels(modelName) {
       playerBasketballReferenceId,
       datumToX,
       datumToY,
-      testSplit: 0.2
+      testSplit: finalModel ? 0 : 0.1
     });
 
     if (!datum) continue;
@@ -157,9 +158,6 @@ async function makePlayerModels(modelName) {
     model.layers[1].trainable = false;
     model.layers[2].trainable = false;
     model.layers[3].trainable = false;
-    model.layers[4].trainable = false;
-    model.layers[5].trainable = false;
-    model.layers[6].trainable = false;
     model.compile({
       optimizer: 'adam',
       loss: 'meanSquaredError',
@@ -168,31 +166,42 @@ async function makePlayerModels(modelName) {
     for (let i = 0; i < PLAYER_EPOCHS; i++) {
       await model.trainOnBatch(datum.trainX, datum.trainY);
     }
-    const [rms, mae] = await model.evaluate(datum.testX, datum.testY);
+    const [mse, mae] = await model.evaluate(
+      finalModel ? datum.trainX : datum.testX,
+      finalModel ? datum.trainY : datum.testY
+    );
 
-    await saveModel(model, `${modelName}/${playerBasketballReferenceId}`, {
-      trainSamples: datum.trainX.shape[0],
-      testSamples: datum.trainY.shape[0],
-      rms: parseFloat(rms.dataSync()[0].toFixed(5)),
-      mae: parseFloat(mae.dataSync()[0].toFixed(5))
-    });
-
-    losses.push({
+    const playerLosses = {
       playerBasketballReferenceId,
+
       trainSamples: datum.trainX.shape[0],
       testSamples: datum.trainY.shape[0],
-      rms: parseFloat(rms.dataSync()[0].toFixed(5)),
-      mae: parseFloat(mae.dataSync()[0].toFixed(3))
-    });
+
+      mse: mse.dataSync()[0],
+      rmse: Math.sqrt(mse.dataSync()[0]),
+      mae: mae.dataSync()[0]
+    };
+
+    await saveModel(
+      model,
+      `${modelName}/${playerBasketballReferenceId}`,
+      playerLosses
+    );
+
+    losses.push(playerLosses);
     bar.tick(1);
   }
 
-  losses = _.sortBy('rms')(losses);
+  losses = _.sortBy('rmse')(losses);
   const table = new Table({
     head: _.keys(losses[0]),
-    colWidths: [20, 8, 8, 8, 8]
+    colWidths: [20, 8, 8, 8, 8, 8]
   });
-  table.push(...losses.map(_.values));
+  table.push(
+    ...losses
+      .map(_.values)
+      .map(l => l.map(c => (_.isNumber(c) ? c.toFixed(3) : c)))
+  );
   console.log(table.toString());
 }
 
