@@ -1,0 +1,28 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[dev-packages]
+pycodestyle = "*"
+autopep8 = "*"
+pytest = "*"
+isort = "*"
+pytest-watch = "*"
+
+[packages]
+requests = "*"
+records = "*"
+requests-html = "*"
+psycopg2 = "*"
+psycopg2-binary = "*"
+pydash = "*"
+scikit-learn = "*"
+dateparser = "*"
+numpy = "*"
+scipy = "*"
+joblib = "*"
+progressbar2 = "*"
+
+[requires]
+python_version = "3.7"

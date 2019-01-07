@@ -1,7 +1,9 @@
 node_modules
 .env
+.envrc
 .env.test
 tmp
 
-nflscrapR-data
+.pytest_cache
+
 dump*.sql
