@@ -630,54 +630,6 @@ def make_mappers():
     return Mappers()
 
 
-def load_data(
-    max_samples=None,
-    batch_size=5000,
-    train_split=0.8,
-    validation_split=0.1,
-    test_split=0.1
-):
-    start = time.time()
-    mapped_data = get_mapped_data(limit=max_samples)
-    logging.debug(f'get_mapped_data: {time.time() - start}')
-
-    train_samples = round(len(mapped_data['X']) * train_split)
-    validation_samples = round(len(mapped_data['X']) * validation_split)
-    test_samples = round(len(mapped_data['X']) * test_split)
-
-    start = time.time()
-    the_data = {
-        'train_X': np.stack([d for d in mapped_data['X'][0:train_samples]]),
-        'train_y': np.stack([d for d in mapped_data['y'][0:train_samples]]),
-        'train_w': np.stack([d for d in mapped_data['w'][0:train_samples]]),
-
-        'validation_X': np.array([]) if validation_samples == 0 else np.stack([d for d in mapped_data['X'][train_samples:train_samples+validation_samples]]),
-        'validation_y': np.array([]) if validation_samples == 0 else np.stack([d for d in mapped_data['y'][train_samples:train_samples+validation_samples]]),
-        'validation_w': np.array([]) if validation_samples == 0 else np.stack([d for d in mapped_data['w'][train_samples:train_samples+validation_samples]]),
-
-        'test_X': np.array([]) if test_samples == 0 else np.stack([d for d in mapped_data['X'][:-test_samples]]),
-        'test_y': np.array([]) if test_samples == 0 else np.stack([d for d in mapped_data['y'][:-test_samples]]),
-        'test_w': np.array([]) if test_samples == 0 else np.stack([d for d in mapped_data['w'][:-test_samples]])
-    }
-    logging.debug(f'split data: {time.time() - start}')
-
-    logging.debug(pprint.pformat({
-        'train_X_shape': the_data['train_X'].shape,
-        'train_y_shape': the_data['train_y'].shape,
-        'train_w_shape': the_data['train_w'].shape,
-
-        'validation_X_shape': the_data['validation_X'].shape,
-        'validation_y_shape': the_data['validation_y'].shape,
-        'validation_w_shape': the_data['validation_w'].shape,
-
-        'test_X_shape': the_data['test_X'].shape,
-        'test_y_shape': the_data['test_y'].shape,
-        'test_w_shape': the_data['test_w'].shape
-    }, depth=4))
-
-    return the_data
-
-
 memory = Memory(location='./tmp', verbose=1)
 get_mapped_data = memory.cache(get_mapped_data)
 
@@ -696,7 +648,6 @@ def load_player_data(
     random.Random(player_basketball_reference_id).shuffle(data)
 
     training_samples = round(len(data) * (1 - test_split))
-    # test_samples = round(len(data) * test_split)
 
     return {
         'player_basketball_reference_id': player_basketball_reference_id,

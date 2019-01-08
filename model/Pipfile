@@ -23,6 +23,7 @@ numpy = "*"
 scipy = "*"
 joblib = "*"
 progressbar2 = "*"
+xgboost = "*"
 
 [requires]
 python_version = "3.7"
