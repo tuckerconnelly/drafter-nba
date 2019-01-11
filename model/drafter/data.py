@@ -8,6 +8,7 @@ import functools
 import logging
 import pprint
 import time
+import multiprocessing
 
 from sklearn.preprocessing import LabelBinarizer, MultiLabelBinarizer
 import numpy as np
@@ -41,15 +42,15 @@ def calculate_fantasy_score(stats):
         return None
 
     return (
-        stats['points'] +
-        stats['three_point_field_goals'] * 0.5 +
-        stats['total_rebounds'] * 1.25 +
-        stats['assists'] * 1.5 +
-        stats['steals'] * 2 +
-        stats['blocks'] * 2 +
-        stats['turnovers'] * -0.5 +
-        1.5 if len([True for k in stats if stats[k] >= 10]) > 2 else 0 +
-        3 if len([True for k in stats if stats[k] >= 10]) > 3 else 0
+        stats['points']
+        + stats['three_point_field_goals'] * 0.5
+        + stats['total_rebounds'] * 1.25
+        + stats['assists'] * 1.5
+        + stats['steals'] * 2
+        + stats['blocks'] * 2
+        + stats['turnovers'] * -0.5
+        + 1.5 if len([True for k in stats if stats[k] >= 10]) > 2 else 0
+        + 3 if len([True for k in stats if stats[k] >= 10]) > 3 else 0
     )
 
 
@@ -276,14 +277,30 @@ def get_mapped_data(
         game_basketball_reference_id=game_basketball_reference_id
     )
 
+    if len(data) == 0:
+        return {'x': [], 'y': [], 'sw': []}
+
+    if len(data) < 100:
+        return {
+            'x': np.stack([mappers.datum_to_x(d) for d in data]),
+            'y': np.stack([mappers.datum_to_y(d) for d in data]).flatten(),
+            'sw': np.stack([mappers.datum_to_sw(d) for d in data])
+        }
+
     random.Random(0).shuffle(data)
 
-    return {
-        'X': [mappers.datum_to_X(d) for d in data],
-        'y': [mappers.datum_to_y(d) for d in data],
-        'w': [mappers.datum_to_w(d) for d in data]
+    p = multiprocessing.Pool(multiprocessing.cpu_count() - 1))
+
+    return_val = {
+        'x': np.stack(p.map(mappers.datum_to_x, data)),
+        'y': np.stack(p.map(mappers.datum_to_y, data)).flatten(),
+        'sw': np.stack(p.map(mappers.datum_to_sw, data))
     }
 
+    p.close()
+    p.join()
+
+    return return_val
 
 
 def get_game_stats():
@@ -459,12 +476,14 @@ def last_games_transform(num, encode_fn, last_games_stats):
 
     real_last_games = [stat for stat in last_games_stats if stat is not None]
     mean = 0 if len(real_last_games) < 2 else statistics.mean(real_last_games)
-    stdev = 0 if len(real_last_games) < 2 else statistics.stdev(real_last_games, mean)
+    stdev = 0 if len(real_last_games) < 2 else statistics.stdev(
+        real_last_games, mean)
     lower_fence = mean - 1.5 * stdev
 
     last_normal_games = [
         game for game in real_last_games if game >= lower_fence]
-    last_normal_games_average = 0 if len(last_normal_games) < 2 else statistics.mean(last_normal_games[0:num])
+    last_normal_games_average = 0 if len(
+        last_normal_games) < 2 else statistics.mean(last_normal_games[0:num])
     encoded_last_normal_games = [None for i in range(num)]
 
     for i in range(num):
@@ -545,7 +564,7 @@ class Mappers:
         self.positions_enc = LabelBinarizer()
         self.positions_enc.fit(get_positions())
 
-    def datum_to_X(self, d):
+    def datum_to_x(self, d):
         if d['playing_at_home']:
             player_team_wins = d['home_wins']
             opposing_team_wins = d['away_wins']
@@ -612,13 +631,14 @@ class Mappers:
                                  player_team_fantasy_points_allowed_last_games),
             last_games_transform(5, self.dk_fantasy_points_enc.transform,
                                  opposing_team_fantasy_points_allowed_last_games),
-            self.players_enc.transform([[d['player_basketball_reference_id']]]).flatten()
+            self.players_enc.transform(
+                [[d['player_basketball_reference_id']]]).flatten()
         ))
 
     def datum_to_y(self, d):
         return [d['dk_fantasy_points']]
 
-    def datum_to_w(self, d):
+    def datum_to_sw(self, d):
         return (self.stats['time_of_most_recent_game'].timestamp() - d['time_of_game'].timestamp()) / self.stats['time_of_first_game'].timestamp()
 
     def y_to_datum(self, y):
@@ -632,30 +652,4 @@ def make_mappers():
 
 memory = Memory(location='./tmp', verbose=1)
 get_mapped_data = memory.cache(get_mapped_data)
-
-
-def load_player_data(
-    player_basketball_reference_id,
-    test_split=0.1
-):
-    mappers = make_mappers()
-
-    data = get_data_from_pg(player_basketball_reference_id=player_basketball_reference_id)
-
-    if len(data) < 10:
-        return None
-
-    random.Random(player_basketball_reference_id).shuffle(data)
-
-    training_samples = round(len(data) * (1 - test_split))
-
-    return {
-        'player_basketball_reference_id': player_basketball_reference_id,
-        'train_x': [mappers.datum_to_X(d) for d in data[0:training_samples]],
-        'train_y': [mappers.datum_to_y(d) for d in data[0:training_samples]],
-        'train_w': [mappers.datum_to_w(d) for d in data[0:training_samples]],
-
-        'test_x': [mappers.datum_to_X(d) for d in data[training_samples:]],
-        'test_y': [mappers.datum_to_y(d) for d in data[training_samples:]],
-        'test_w': [mappers.datum_to_w(d) for d in data[training_samples:]]
-    }
+get_players = memory.cache(get_players)
