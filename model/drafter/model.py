@@ -32,7 +32,8 @@ os.environ['KERAS_BACKEND'] = 'plaidml.keras.backend'
 logging.basicConfig(level=logging.DEBUG)
 
 MAX_SAMPLES = None
-BATCH_SIZE = 32
+BATCH_SIZE = 128
+PLAYER_BATCH_SIZE = 64
 EPOCHS = 30
 PLAYER_LOSS_PLAYER_LIMIT = None
 PLAYER_EPOCHS = 20
@@ -41,6 +42,7 @@ MODEL_DIR = 'tmp/models'
 if os.environ.get('DEBUG') is not None:
     MAX_SAMPLES = 1000
     BATCH_SIZE = 32
+    PLAYER_BATCH_SIZE = 16
     EPOCHS = 1
     PLAYER_EPOCHS = 1
     PLAYER_LOSS_PLAYER_LIMIT = 3
@@ -119,6 +121,8 @@ def fit(final_model=False):
 
 
 def make_player_models(original_model, model_name, final_model=False):
+    # data.cache_player_data()
+
     players = list(data.get_players())
 
     if PLAYER_LOSS_PLAYER_LIMIT:
@@ -150,7 +154,7 @@ def make_player_models(original_model, model_name, final_model=False):
 
         model = make_model(input_dim=len(x_train[0]))
         model.set_weights(original_model.get_weights())
-        for layer in model.layers[:-5]:
+        for layer in model.layers[:-9]:
             layer.trainable = False
         if os.environ.get('DEBUG') is not None:
             for layer in model.layers:
@@ -161,7 +165,7 @@ def make_player_models(original_model, model_name, final_model=False):
             x=x_train,
             y=y_train,
             sample_weight=sw_train,
-            batch_size=BATCH_SIZE,
+            batch_size=PLAYER_BATCH_SIZE,
             epochs=PLAYER_EPOCHS,
             verbose=0,
             validation_data=(x_val, y_val, sw_val),
@@ -175,8 +179,8 @@ def make_player_models(original_model, model_name, final_model=False):
 
         player_losses = {
             'player_basketball_reference_id': player_basketball_reference_id,
-            'train_samples': len(mapped_data['x']),
-            'test_samples': len(mapped_data['x']),
+            'train_samples': len(x_train),
+            'test_samples': len(x_test),
 
             'mse': mse,
             'rmse': mse ** 0.5

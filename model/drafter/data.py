@@ -268,7 +268,7 @@ def get_mapped_data(
     player_basketball_reference_id=None,
     game_basketball_reference_id=None
 ):
-    mappers = Mappers()
+    mappers = make_mappers()
 
     data = get_data_from_pg(
         limit=limit,
@@ -289,7 +289,7 @@ def get_mapped_data(
 
     random.Random(0).shuffle(data)
 
-    p = multiprocessing.Pool(multiprocessing.cpu_count() - 1))
+    p = multiprocessing.Pool(multiprocessing.cpu_count() - 1)
 
     return_val = {
         'x': np.stack(p.map(mappers.datum_to_x, data)),
@@ -650,6 +650,25 @@ def make_mappers():
     return Mappers()
 
 
+# Got from https://stackoverflow.com/questions/312443/how-do-you-split-a-list-into-evenly-sized-chunks
+def chunks(l, n):
+    """Yield successive n-sized chunks from l."""
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
+
+
+def get_mapped_data_for_player(player_basketball_reference_id):
+    return get_mapped_data(player_basketball_reference_id=player_basketball_reference_id)
+
+
+def cache_player_data():
+    print('Caching player data')
+    players = get_players()
+    p = multiprocessing.Pool(int(multiprocessing.cpu_count() / 2))
+    p.map(get_mapped_data_for_player, players)
+
+
 memory = Memory(location='./tmp', verbose=1)
 get_mapped_data = memory.cache(get_mapped_data)
 get_players = memory.cache(get_players)
+cache_player_data = memory.cache(cache_player_data)
