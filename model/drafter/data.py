@@ -6,7 +6,6 @@ import statistics
 import random
 import functools
 import logging
-import pprint
 import time
 import multiprocessing
 
@@ -15,6 +14,40 @@ import numpy as np
 from joblib import Memory
 
 import services
+
+
+ABBREVIATIONS = {
+    'NO': 'NOP',
+    'DAL': 'DAL',
+    'CHA': 'CHO',
+    'BKN': 'BRK',
+    'TOR': 'TOR',
+    'MIA': 'MIA',
+    'WAS': 'WAS',
+    'DET': 'DET',
+    'PHO': 'PHO',
+    'ORL': 'ORL',
+    'MIN': 'MIN',
+    'CHI': 'CHI',
+    'CLE': 'CLE',
+    'MEM': 'MEM',
+    'DEN': 'DEN',
+    'SA': 'SAS',
+    'SAC': 'SAC',
+    'LAC': 'LAC',
+    'IND': 'IND',
+    'ATL': 'ATL',
+    'BOS': 'BOS',
+    'HOU': 'HOU',
+    'POR': 'POR',
+    'GS': 'GSW',
+    'MIL': 'MIL',
+    'NY': 'NYK',
+    'LAL': 'LAL',
+    'PHI': 'PHI',
+    'UTA': 'UTA',
+    'OKC': 'OKC'
+}
 
 
 class MeanMinMaxEncoder:
@@ -39,7 +72,7 @@ class MeanMinMaxEncoder:
 
 def calculate_fantasy_score(stats):
     if not stats['seconds_played']:
-        return None
+        return 0
 
     return (
         stats['points']
@@ -49,8 +82,8 @@ def calculate_fantasy_score(stats):
         + stats['steals'] * 2
         + stats['blocks'] * 2
         + stats['turnovers'] * -0.5
-        + 1.5 if len([True for k in stats if stats[k] >= 10]) > 2 else 0
-        + 3 if len([True for k in stats if stats[k] >= 10]) > 3 else 0
+        + (1.5 if len([True for k in stats if stats[k] >= 10]) > 2 else 0)
+        + (3 if len([True for k in stats if stats[k] >= 10]) > 3 else 0)
     )
 
 
@@ -404,6 +437,7 @@ def format_player_name(name):
     return '{first}. {last}'.format(first=first, last=last)
 
 
+@functools.lru_cache()
 def get_players_by_team_and_formatted_name():
     players = services.pgr.query(
         """

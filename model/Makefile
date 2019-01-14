@@ -10,6 +10,9 @@ fit:
 fit-final:
 	FINAL=1 pipenv run python3 drafter/model.py
 
+draft:
+	pipenv run python3 drafter/drafter.py
+
 test:
 	pytest drafter
 
@@ -19,4 +22,5 @@ test-watch:
 clean:
 	find . -type f -name "*.py[co]" -delete -or -type d -name "__pycache__" -delete
 
-.PHONY: init test test-watch clean
+clear-cache:
+	rm -rf tmp

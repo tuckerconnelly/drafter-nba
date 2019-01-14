@@ -27,6 +27,7 @@ sqlalchemy = "*"
 random-word = "*"
 random-name = "*"
 terminaltables = "*"
+pandas = "*"
 
 [requires]
 python_version = "3.6"

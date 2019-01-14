@@ -22,7 +22,7 @@ const {
   teamGetStatsFromLastGamesFromPg
 } = require('./data');
 const { wsq } = require('./services');
-const { predict, loadModel, loadAllModels } = require('./train');
+const { predict, loadModel } = require('./train');
 const { getLineups } = require('./getLineups');
 
 const ABBREVIATIONS = {
@@ -312,25 +312,6 @@ async function checkStarters(data) {
 
 const MODEL_NAME = 'model_1546544219592';
 
-const predictWithModel = memoizeFs(
-  path.join(__dirname, '../../tmp/predictWithModel.json'),
-  async data => {
-    const model = await loadModel(MODEL_NAME);
-    let res = await predict(model, data);
-
-    fs.writeFileSync(
-      path.join(
-        __dirname,
-        `../../tmp/${moment().format('YYYY-MM-DD')}-predictions-with-model.json`
-      ),
-      JSON.stringify(res)
-    );
-
-    return res;
-  }
-);
-
-// TODO Make stochastic
 const predictWithPlayerModels = memoizeFs(
   path.join(__dirname, '../../tmp/predictWithPlayerModels.json'),
   async data => {
@@ -564,7 +545,6 @@ if (process.env.TASK === 'getPredictions') {
         );
       })
     )
-    // .then(predictWithModel)
     .then(predictWithPlayerModels)
     .then(outputTable)
     .then(pickLineups);

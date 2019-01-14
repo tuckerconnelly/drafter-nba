@@ -4,7 +4,6 @@ The model
 
 import os
 import logging
-import pprint
 import copy
 import json
 
@@ -26,6 +25,7 @@ from terminaltables import AsciiTable
 
 
 import data
+import scraping
 
 np.random.seed(0)
 os.environ['KERAS_BACKEND'] = 'plaidml.keras.backend'
@@ -121,12 +121,10 @@ def fit(final_model=False):
 
 
 def make_player_models(original_model, model_name, final_model=False):
-    # data.cache_player_data()
-
-    players = list(data.get_players())
+    df = scraping.parse_salary_file()
 
     if PLAYER_LOSS_PLAYER_LIMIT:
-        players = players[0:PLAYER_LOSS_PLAYER_LIMIT]
+        df = df[0:PLAYER_LOSS_PLAYER_LIMIT]
 
     losses = []
 
@@ -136,8 +134,9 @@ def make_player_models(original_model, model_name, final_model=False):
         ' (', progressbar.ETA(), ') '
     ]
 
-    for i in progressbar.progressbar(range(len(players)), widgets=widgets):
-        player_basketball_reference_id = players[i]
+    for i in progressbar.progressbar(range(len(df)), widgets=widgets):
+        row = df.iloc[i]
+        player_basketball_reference_id = row['basketball_reference_id']
 
         mapped_data = data.get_mapped_data(
             player_basketball_reference_id=player_basketball_reference_id)
@@ -154,7 +153,7 @@ def make_player_models(original_model, model_name, final_model=False):
 
         model = make_model(input_dim=len(x_train[0]))
         model.set_weights(original_model.get_weights())
-        for layer in model.layers[:-9]:
+        for layer in model.layers[:-5]:
             layer.trainable = False
         if os.environ.get('DEBUG') is not None:
             for layer in model.layers:
@@ -177,13 +176,19 @@ def make_player_models(original_model, model_name, final_model=False):
         y_pred = model.predict(x_test)
         mse = mean_squared_error(y_test, y_pred, sample_weight=sw_test)
 
+        y_pred_og = original_model.predict(x_test)
+        mse_og = mean_squared_error(y_pred_og, y_pred, sample_weight=sw_test)
+
         player_losses = {
             'player_basketball_reference_id': player_basketball_reference_id,
             'train_samples': len(x_train),
             'test_samples': len(x_test),
 
             'mse': mse,
-            'rmse': mse ** 0.5
+            'rmse': mse ** 0.5,
+
+            'mse_og': mse_og,
+            'rmse_og': mse_og ** 0.5
         }
         save_model(model, model_name + '/' +
                    player_basketball_reference_id, player_losses)
@@ -197,7 +202,7 @@ def make_player_models(original_model, model_name, final_model=False):
     print(table.table)
 
 
-def predict(model, batch):
+def predict(model, model_losses, batch):
     mappers = data.make_mappers()
     batch_x = np.stack([mappers.datum_to_x(datum) for datum in batch])
     predictions = model.predict_on_batch(batch_x)
@@ -205,9 +210,9 @@ def predict(model, batch):
     return_batch = []
     for i in range(len(batch)):
         datum = copy.deepcopy(batch[i])
-        datum['_predictions'] = mappers.datum_to_y(predictions[i])
-        datum['_losses'] = model.drafter_losses
-        return_batch.push(datum)
+        datum['_predictions'] = mappers.y_to_datum(predictions[i])
+        datum['_losses'] = model_losses
+        return_batch.append(datum)
 
     return return_batch
 
@@ -227,9 +232,14 @@ def save_model(model, model_name, losses={}):
 
 def load_model(model_name):
     model = keras_load_model(MODEL_DIR + '/' + model_name + '/model.h5')
-    with open(MODEL_DIR + '/' + model_name + '/losses.json', 'w') as fp:
-        setattr(model, 'losses', json.load(fp))
-    return model
+    with open(MODEL_DIR + '/' + model_name + '/losses.json', 'r') as fp:
+        losses = json.loads(fp.read())
+    return model, losses
+
+
+def get_latest_model_name():
+    for root, dirs, files in os.walk(MODEL_DIR, topdown=True):
+        return sorted(dirs)[-1]
 
 
 if __name__ == '__main__':
