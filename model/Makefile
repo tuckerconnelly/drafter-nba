@@ -1,6 +1,7 @@
 install:
 	pipenv install
 
+
 fit-debug:
 	DEBUG=1 pipenv run python3 drafter/model.py
 
@@ -9,6 +10,17 @@ fit:
 
 fit-final:
 	FINAL=1 pipenv run python3 drafter/model.py
+
+
+fit-debug-xg:
+	DEBUG=1 pipenv run python3 drafter/model_xgboost.py
+
+fit-xg:
+	pipenv run python3 drafter/model_xgboost.py
+
+fit-final-xg:
+	FINAL=1 pipenv run python3 drafter/model_xgboost.py
+
 
 draft:
 	pipenv run python3 drafter/drafter.py

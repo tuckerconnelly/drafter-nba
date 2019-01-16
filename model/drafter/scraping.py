@@ -71,7 +71,7 @@ def map_player_name(player_name):
 
 
 # NOTE Using date to bust joblib cache
-def get_lineups(date):
+def get_lineups(date=None):
     session = HTMLSession()
     r = session.get('https://www.rotowire.com/basketball/nba-lineups.php')
     game_els = r.html.find('.lineup.is-nba:not(.is-tools)')
