@@ -98,6 +98,8 @@ def get_lineups(date=None):
                 'injury': None if len(player_el.find('.lineup__inj')) == 0 else player_el.find('.lineup__inj')[0].text.strip()
             })
 
+        assert len(team_lineups[away_team_abbreviation]['starters']) == 5
+
         home_team_abbreviation = data.ABBREVIATIONS[game_el.find('.lineup__abbr')[1].text.strip()]
         team_lineups[home_team_abbreviation] = {'starters': [], 'injured': []}
 
@@ -116,6 +118,8 @@ def get_lineups(date=None):
                 'name': player_formatted_name,
                 'injury': None if len(player_el.find('.lineup__inj')) == 0 else player_el.find('.lineup__inj')[0].text.strip()
             })
+
+        assert len(team_lineups[home_team_abbreviation]['starters']) == 5
 
     return team_lineups
 
