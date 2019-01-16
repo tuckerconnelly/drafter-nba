@@ -63,7 +63,7 @@ def parse_salary_file():
     return pd.DataFrame(parsed_data)
 
 
-def map_player_name(player_name):
+def _map_player_name(player_name):
     if (player_name == 'W. Hernangomez'):
         return 'G. Hernangomez'
 
@@ -72,6 +72,8 @@ def map_player_name(player_name):
 
 # NOTE Using date to bust joblib cache
 def get_lineups(date=None):
+    pbtfn = data.get_players_by_team_and_formatted_name()
+
     session = HTMLSession()
     r = session.get('https://www.rotowire.com/basketball/nba-lineups.php')
     game_els = r.html.find('.lineup.is-nba:not(.is-tools)')
@@ -83,11 +85,16 @@ def get_lineups(date=None):
         away_roster_player_els = game_el.find(
             '.lineup__list.is-visit .lineup__player')
         for i, player_el in enumerate(away_roster_player_els):
+            player_formatted_name = _map_player_name(data.format_player_name(player_el.find('.lineup__pos + a')[0].text.strip()))
+
+            # Ensure player exists
+            pbtfn[away_team_abbreviation + ' ' + player_formatted_name]
+
             key = 'starters' if i < 5 else 'injured'
             team_lineups[away_team_abbreviation][key].append({
                 'team': away_team_abbreviation,
                 'position': player_el.find('.lineup__pos')[0].text.strip(),
-                'name': map_player_name(data.format_player_name(player_el.find('.lineup__pos + a')[0].text.strip())),
+                'name': player_formatted_name,
                 'injury': None if len(player_el.find('.lineup__inj')) == 0 else player_el.find('.lineup__inj')[0].text.strip()
             })
 
@@ -97,11 +104,16 @@ def get_lineups(date=None):
         home_roster_player_els = game_el.find(
             '.lineup__list.is-home .lineup__player')
         for i, player_el in enumerate(home_roster_player_els):
+            player_formatted_name = _map_player_name(data.format_player_name(player_el.find('.lineup__pos + a')[0].text.strip()))
+
+            # Ensure player exists
+            pbtfn[home_team_abbreviation + ' ' + player_formatted_name]
+
             key = 'starters' if i < 5 else 'injured'
             team_lineups[home_team_abbreviation][key].append({
                 'team': home_team_abbreviation,
                 'position': player_el.find('.lineup__pos')[0].text.strip(),
-                'name': map_player_name(data.format_player_name(player_el.find('.lineup__pos + a')[0].text.strip())),
+                'name': player_formatted_name,
                 'injury': None if len(player_el.find('.lineup__inj')) == 0 else player_el.find('.lineup__inj')[0].text.strip()
             })
 

@@ -27,7 +27,7 @@ def embellish_salary_data(salary_df):
     for i in progressbar.progressbar(range(len(salary_df)), widgets=widgets):
         row = salary_df.iloc[i]
         now = datetime.datetime.now()
-        formatted_name = scraping.map_player_name(data.format_player_name(row['Name']))
+        formatted_name = data.format_player_name(row['Name'])
 
         stats_last_games = data.get_stats_last_games_from_pg(
             player_basketball_reference_id=row['basketball_reference_id'],
