@@ -202,16 +202,255 @@ def team_get_stats_last_games_from_pg(
     }
 
 
-def cache_single_games_players():
-    print('TODO')
+def cache_single_games_players(games_player):
+    assert games_player['player_basketball_reference_id']
+    assert games_players['season']
+    assert games_player['time_of_game']
+
+    services.pgw.query(
+        '''
+            delete from games_players_computed
+            where game_basketball_reference_id = :game_basketball_reference_id
+            and player_basketball_reference_id = :player_basketball_reference_id
+        ''',
+        game_basketball_reference_id=games_players['game_basketball_reference_id'],
+        player_basketball_reference_id=games_players['player_basketball_reference_id']
+    )
+
+    stats_last_games = get_stats_last_games_from_pg(
+        player_basketball_reference_id=games_player['player_basketball_reference_id'],
+        season=games_player['season'],
+        current_game_date=games_player['time_of_game']
+    )
+
+    services.pgw.query(
+        '''
+            insert into games_players_computed (
+                game_basketball_reference_id,
+                player_basketball_reference_id,
+                dk_fantasy_points,
+                dk_fantasy_points_last_games,
+                seconds_played_last_games
+            )
+            values (
+                :game_basketball_reference_id,
+                :player_basketball_reference_id,
+                :dk_fantasy_points,
+                :dk_fantasy_points_last_games,
+                :seconds_played_last_games
+            )
+        ''',
+        game_basketball_reference_id=games_players['game_basketball_reference_id'],
+        player_basketball_reference_id=games_players['player_basketball_reference_id'],
+        dk_fantasy_points=calculate_fantasy_score(games_player),
+        dk_fantasy_points_last_games=stats_last_games['dk_fantasy_points_last_games'],
+        seconds_played_last_games=stats_last_games['seconds_played_last_games']
+    )
 
 
 def cache_single_game():
-    print('TODO')
+    assert game['basketball_reference_id']
+    assert game['season']
+    assert game['time_of_game']
+    assert game['away_team_basketball_reference_id']
+    assert game['home_team_basketball_reference_id']
+
+    away_starters = services.pgr.query(
+        '''
+            select gp.player_basketball_reference_id
+            from games_players gp
+            inner join teams_players tp
+              on tp.player_basketball_reference_id = gp.player_basketball_reference_id
+              and tp.season = :season
+            where gp.game_basketball_reference_id = :basketball_reference_id
+            and gp.starter = true
+            and tp.team_basketball_reference_id = :away_team_basketball_reference_id
+        ''',
+        season=game['season'],
+        basketball_reference_id=game['basketball_reference_id'],
+        away_team_basketball_reference_id=game['away_team_basketball_reference_id']
+    ).all(as_dict=True)
+    away_starters = map(lambda gp: gp['player_basketball_reference_id'], away_starters)
+
+    assert len(away_starters) == 5
+
+    home_starters = services.pgr.query(
+        '''
+            select gp.player_basketball_reference_id
+            from games_players gp
+            inner join teams_players tp
+              on tp.player_basketball_reference_id = gp.player_basketball_reference_id
+              and tp.season = :season
+            where gp.game_basketball_reference_id = :basketball_reference_id
+            and gp.starter = true
+            and tp.team_basketball_reference_id = :home_team_basketball_reference_id
+        ''',
+        season=game['season'],
+        basketball_reference_id=game['basketball_reference_id'],
+        home_team_basketball_reference_id=game['home_team_basketball_reference_id']
+    ).all(as_dict=True)
+    home_starters = map(lambda gp: gp['player_basketball_reference_id'], home_starters)
+
+    assert len(home_starters) == 5
+
+    away_dk_fantasy_points_allowed = services.pgr.query(
+        '''
+          select sum(gpc.dk_fantasy_points) as dk_fantasy_points_allowed
+          from games_players_computed gpc
+          inner join games g
+            on g.basketball_reference_id = gpc.game_basketball_reference_id
+          inner join teams_players tp
+            on tp.player_basketball_reference_id = gpc.player_basketball_reference_id
+            and tp.team_basketball_reference_id != g.away_team_basketball_reference_id
+            and tp.season = g.season
+          where gpc.game_basketball_reference_id = :game_basketball_reference_id
+          group by g.id
+        ''',
+        game_basketball_reference_id=game['basketball_reference_id']
+    ).all(as_dict=True)
+    away_dk_fantasy_points_allowed = map(lambda gpc: gpc['dk_fantasy_points_allowed'], away_dk_fantasy_points_allowed)
+
+    home_dk_fantasy_points_allowed = services.pgr.query(
+        '''
+          select sum(gpc.dk_fantasy_points) as dk_fantasy_points_allowed
+          from games_players_computed gpc
+          inner join games g
+            on g.basketball_reference_id = gpc.game_basketball_reference_id
+          inner join teams_players tp
+            on tp.player_basketball_reference_id = gpc.player_basketball_reference_id
+            and tp.team_basketball_reference_id != g.away_team_basketball_reference_id
+            and tp.season = g.season
+          where gpc.game_basketball_reference_id = :game_basketball_reference_id
+          group by g.id
+        ''',
+        game_basketball_reference_id=game['basketball_reference_id']
+    ).all(as_dict=True)
+    home_dk_fantasy_points_allowed = map(lambda gpc: gpc['dk_fantasy_points_allowed'], home_dk_fantasy_points_allowed)
+
+    away_team_stats_last_games = team_get_stats_last_games_from_pg(
+        team_basketball_reference_id=game['away_team_basketball_reference_id'],
+        season=game['season'],
+        current_game_date=game['time_of_game']
+    )
+
+    home_team_stats_last_games = team_get_stats_last_games_from_pg(
+        team_basketball_reference_id=game['home_team_basketball_reference_id'],
+        season=game['season'],
+        current_game_date=game['time_of_game']
+    )
+
+    services.pgw.query(
+        '''
+            delete from game_computed
+            where game_basketball_reference_id = :game_basketball_reference_id
+        ''',
+        game_basketball_reference_id=game['basketball_reference_id']
+    )
+
+    services.pgw.query(
+        '''
+            insert into games_computed (
+                game_basketball_reference_id,
+                away_starters,
+                home_starters,
+                away_wins,
+                away_losses,
+                home_wins,
+                home_losses,
+                away_dk_fantasy_points_allowed,
+                home_dk_fantasy_points_allowed,
+                away_dk_fantasy_points_allowed_last_games,
+                home_dk_fantasy_points_allowed_last_games
+            )
+            values (
+                :game_basketball_reference_id,
+                :away_starters,
+                :home_starters,
+                :away_wins,
+                :away_losses,
+                :home_wins,
+                :home_losses,
+                :away_dk_fantasy_points_allowed,
+                :home_dk_fantasy_points_allowed,
+                :away_dk_fantasy_points_allowed_last_games,
+                :home_dk_fantasy_points_allowed_last_games
+            )
+        ''',
+        game_basketball_reference_id=game['basketball_reference_id'],
+        away_starters=away_starters,
+        home_starters=home_starters,
+        away_wins=away_team_stats_last_games['wins'],
+        away_losses=away_team_stats_last_games['losses'],
+        home_wins=home_team_stats_last_games['wins'],
+        home_losses=home_team_stats_last_games['losses'],
+        away_dk_fantasy_points_allowed=away_dk_fantasy_points_allowed,
+        home_dk_fantasy_points_allowed=home_dk_fantasy_points_allowed,
+        away_dk_fantasy_points_allowed_last_games=away_team_stats_last_games['dk_fantasy_points_allowed_last_games'],
+        home_dk_fantasy_points_allowed_last_games=home_team_stats_last_games['dk_fantasy_points_allowed_last_games']
+    )
 
 
 def cache_data():
-    print('TODO')
+    print('Caching games_players')
+
+    games_players = services.pgr.query(
+        '''
+          select
+            gp.game_basketball_reference_id,
+            gp.player_basketball_reference_id,
+            gp.seconds_played,
+            gp.points,
+            gp.three_point_field_goals,
+            gp.total_rebounds,
+            gp.assists,
+            gp.steals,
+            gp.blocks,
+            gp.turnovers,
+            gp.free_throws,
+
+            g.season,
+            g.time_of_game
+          from games_players gp
+          inner join games g
+            on g.basketball_reference_id = gp.game_basketball_reference_id
+          where not exists (
+          	select
+          	from games_players_computed gpc
+          	where gpc.game_basketball_reference_id = gp.game_basketball_reference_id
+          	and gpc.player_basketball_reference_id = gp.player_basketball_reference_id
+          )
+        '''
+    ).all(as_dict=True)
+
+    widgets = [
+        ' [', progressbar.Timer(), '] ',
+        progressbar.Bar(),
+        ' (', progressbar.ETA(), ') '
+    ]
+    for i in progressbar.progressbar(range(len(games_players)), widgets=widgets):
+        cache_single_games_players(games_players[i])
+
+    print('Caching games')
+
+    games = services.pgr.query(
+        '''
+          select
+            season,
+            basketball_reference_id,
+            away_team_basketball_reference_id,
+            home_team_basketball_reference_id,
+            time_of_game
+          from games
+        '''
+    ).all(as_dict=True)
+
+    widgets = [
+        ' [', progressbar.Timer(), '] ',
+        progressbar.Bar(),
+        ' (', progressbar.ETA(), ') '
+    ]
+    for i in progressbar.progressbar(range(len(games_players)), widgets=widgets):
+        cache_single_game(games[i])
 
 
 # Load Data ##
@@ -390,7 +629,7 @@ def get_stats():
 
               avg(gpc.dk_fantasy_points) as dk_fantasy_points_avg,
               min(gpc.dk_fantasy_points) as dk_fantasy_points_min,
-             max(gpc.dk_fantasy_points) as dk_fantasy_points_max
+              max(gpc.dk_fantasy_points) as dk_fantasy_points_max
 
             from games_players gp
             inner join players p
