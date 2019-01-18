@@ -2,6 +2,8 @@ import pprint
 import datetime
 import re
 import dateparser
+import sys
+import os
 
 from requests_html import HTMLSession
 from joblib import Memory
@@ -9,6 +11,9 @@ import pandas as pd
 
 import services
 import data
+
+
+# DKSalaries.csv
 
 
 def parse_salary_file():
@@ -70,6 +75,9 @@ def _map_player_name(player_name):
     return player_name
 
 
+# Starting lineups
+
+
 # NOTE Using date to bust joblib cache
 def get_lineups(date=None):
     pbtfn = data.get_players_by_team_and_formatted_name()
@@ -79,13 +87,15 @@ def get_lineups(date=None):
     game_els = r.html.find('.lineup.is-nba:not(.is-tools)')
     team_lineups = {}
     for game_el in game_els:
-        away_team_abbreviation = data.ABBREVIATIONS[game_el.find('.lineup__abbr')[0].text.strip()]
+        away_team_abbreviation = data.ABBREVIATIONS[game_el.find('.lineup__abbr')[
+            0].text.strip()]
         team_lineups[away_team_abbreviation] = {'starters': [], 'injured': []}
 
         away_roster_player_els = game_el.find(
             '.lineup__list.is-visit .lineup__player')
         for i, player_el in enumerate(away_roster_player_els):
-            player_formatted_name = _map_player_name(data.format_player_name(player_el.find('.lineup__pos + a')[0].text.strip()))
+            player_formatted_name = _map_player_name(data.format_player_name(
+                player_el.find('.lineup__pos + a')[0].text.strip()))
 
             # Ensure player exists
             pbtfn[away_team_abbreviation + ' ' + player_formatted_name]
@@ -100,13 +110,15 @@ def get_lineups(date=None):
 
         assert len(team_lineups[away_team_abbreviation]['starters']) == 5
 
-        home_team_abbreviation = data.ABBREVIATIONS[game_el.find('.lineup__abbr')[1].text.strip()]
+        home_team_abbreviation = data.ABBREVIATIONS[game_el.find('.lineup__abbr')[
+            1].text.strip()]
         team_lineups[home_team_abbreviation] = {'starters': [], 'injured': []}
 
         home_roster_player_els = game_el.find(
             '.lineup__list.is-home .lineup__player')
         for i, player_el in enumerate(home_roster_player_els):
-            player_formatted_name = _map_player_name(data.format_player_name(player_el.find('.lineup__pos + a')[0].text.strip()))
+            player_formatted_name = _map_player_name(data.format_player_name(
+                player_el.find('.lineup__pos + a')[0].text.strip()))
 
             # Ensure player exists
             pbtfn[home_team_abbreviation + ' ' + player_formatted_name]
@@ -123,9 +135,198 @@ def get_lineups(date=None):
 
     return team_lineups
 
+
+# Scrape teams
+
+
+def _scrape_team(url):
+    print(url)
+
+    session = HTMLSession()
+    r = session.get(url)
+
+    team_name = r.html.find('#meta [itemprop="name"] span')[0].text.strip()
+    basketball_reference_id = r.html.find('[rel="canonical"]')[
+        0].attrs['href'].split('/')[4]
+
+    team = services.pgr.query(
+        '''
+            select *
+            from teams
+            where basketball_reference_id = :basketball_reference_id
+        ''',
+        basketball_reference_id=basketball_reference_id
+    ).first(as_dict=True)
+
+    if not team:
+        team = services.pgw.query(
+            '''
+                insert into teams (name, basketball_reference_id)
+                values (:name, :basketball_reference_id)
+                returning *
+            ''',
+            name=team_name,
+            basketball_reference_id=basketball_reference_id
+        ).first(as_dict=True)
+
+    # pprint.pprint(team)
+
+    return team
+
+
+def _scrape_team_roster(team, url):
+    session = HTMLSession()
+    r = session.get(url)
+
+    print(url)
+
+    season = int(r.html.find(
+        '#meta [itemprop="name"] span:first-of-type')[0].text.split('-')[0]) + 1
+
+    roster_trs = r.html.find('#roster tr')[1:]
+    for tr in roster_trs:
+
+        player_number_text = tr.find('[data-stat="number"]')[0].text.strip()
+        player_number = int(player_number_text) if player_number_text != '' else None
+        name = tr.find(
+            '[data-stat="player"] a')[0].text.split('(TW)')[0].strip()
+        player_basketball_reference_id = tr.find(
+            '[data-stat="player"] a')[0].attrs['href'].split('/')[3].split('.html')[0].strip()
+        position = tr.find('[data-stat="pos"]')[0].text.strip()
+        height_inches_parts = list(map(int, tr.find('[data-stat="height"]')[0].text.split('-')))
+        height_inches = height_inches_parts[0] * 12 + height_inches_parts[1]
+        weight_lbs = int(tr.find('[data-stat="weight"]')[0].text.strip())
+        date_of_birth = dateparser.parse(tr.find('[data-stat="birth_date"]')[0].text.strip())
+        birth_country = tr.find('[data-stat="birth_country"]')[0].text.strip()
+        experience = int(tr.find('[data-stat="years_experience"]')[0].text.strip())
+
+        # pprint.pprint({
+        #     'name': name,
+        #     'player_basketball_reference_id': player_basketball_reference_id,
+        #     'position': position,
+        #     'height_inches': height_inches,
+        #     'weight_lbs': weight_lbs,
+        #     'date_of_birth': date_of_birth,
+        #     'birth_country': birth_country,
+        #     'experience': experience
+        # })
+
+        in_db_player = services.pgr.query(
+            '''
+                select *
+                from players
+                where basketball_reference_id = :player_basketball_reference_id
+            ''',
+            player_basketball_reference_id=player_basketball_reference_id
+        ).first(as_dict=True)
+
+        if not in_db_player:
+            in_db_player = services.pgw.query(
+                '''
+                    insert into players (
+                        name,
+                        date_of_birth,
+                        birth_country
+                    )
+                    values (
+                        :name,
+                        :date_of_birth,
+                        :birth_country
+                    )
+                ''',
+                name=name,
+                date_of_birth=date_of_birth,
+                birth_country=birth_country
+            ).first(as_dict=True)
+
+        services.pgw.query(
+            '''
+                delete from teams_players
+                where player_basketball_reference_id = :player_basketball_reference_id
+                and team_basketball_reference_id = :team_basketball_reference_id
+                and season = :season
+            ''',
+            player_basketball_reference_id=player_basketball_reference_id,
+            team_basketball_reference_id=team['basketball_reference_id'],
+            season=season
+        )
+
+        in_db_team_player = services.pgw.query(
+            '''
+                insert into teams_players (
+                    player_basketball_reference_id,
+                    team_basketball_reference_id,
+                    season,
+                    player_number,
+                    position,
+                    height_inches,
+                    weight_lbs,
+                    experience,
+                    currently_on_this_team
+                )
+                values (
+                    :player_basketball_reference_id,
+                    :team_basketball_reference_id,
+                    :season,
+                    :player_number,
+                    :position,
+                    :height_inches,
+                    :weight_lbs,
+                    :experience,
+                    :currently_on_this_team
+                )
+                returning *
+            ''',
+            player_basketball_reference_id=player_basketball_reference_id,
+            team_basketball_reference_id=team['basketball_reference_id'],
+            season=season,
+            player_number=player_number,
+            position=position,
+            height_inches=height_inches,
+            weight_lbs=weight_lbs,
+            experience=experience,
+            currently_on_this_team=(True if season == 2019 else False)
+        ).first(as_dict=True)
+
+        return in_db_team_player
+
+
+def scrape_teams():
+    MIN_SEASON = 2019
+    if os.environ.get('ALL'):
+        MIN_SEASON = 2003
+
+    session = HTMLSession()
+    r = session.get('https://www.basketball-reference.com/teams')
+
+    active_team_as = r.html.find('#teams_active a')
+    for active_team_a in active_team_as:
+        team_href = active_team_a.attrs['href']
+        team_url = f'https://www.basketball-reference.com{team_href}'
+        team = _scrape_team(team_url)
+
+        session = HTMLSession()
+        team_r = session.get(team_url)
+
+        season_as = team_r.html.find('[data-stat="season"] a')
+        for season_a in season_as:
+            season_a_href = season_a.attrs['href']
+            season = int(season_a_href.split('/')[3].split('.')[0])
+            if season < MIN_SEASON:
+                continue
+            _scrape_team_roster(
+                team, f'https://www.basketball-reference.com{season_a_href}')
+
+
 memory = Memory(location='./tmp', verbose=1)
 get_lineups = memory.cache(get_lineups)
 
 
 if __name__ == '__main__':
-    pprint.pprint(get_lineups(datetime.datetime.now().date()))
+    arg = sys.argv[1]
+    if arg == 'lineups':
+        get_lineups()
+    elif arg == 'teams':
+        scrape_teams()
+    else:
+        print(f'Argument not recognized: {arg}')

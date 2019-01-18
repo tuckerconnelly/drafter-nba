@@ -23,4 +23,4 @@ fi
 # -- up to that point
 # EOF
 
-# pg_dump 'postgresql://postgres:k1w8oj838d7qNv54@localhost:54321/drafter_nba' --data-only > dump2.sql
+# pg_dump 'postgresql://postgres:password@localhost:5432/drafter_nba' --data-only > dump.sql
