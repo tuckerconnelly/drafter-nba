@@ -31,21 +31,24 @@ np.random.seed(0)
 os.environ['KERAS_BACKEND'] = 'plaidml.keras.backend'
 logging.basicConfig(level=logging.DEBUG)
 
+MODEL_DIR = 'tmp/models'
+
 MAX_SAMPLES = None
 BATCH_SIZE = 128
-PLAYER_BATCH_SIZE = 64
-EPOCHS = 3
+EPOCHS = 3 if os.environ.get('FINAL', False) else 30
 PLAYER_LOSS_PLAYER_LIMIT = None
-PLAYER_EPOCHS = 20
-MODEL_DIR = 'tmp/models'
+PLAYER_MIN_NUMBER_GAMES_PLAYED=41
+# PLAYER_BATCH_SIZE=64
+# PLAYER_EPOCHS = 5 if os.environ.get('FINAL', False) else 30
 
 if os.environ.get('DEBUG') is not None:
     MAX_SAMPLES = 1000
     BATCH_SIZE = 32
-    PLAYER_BATCH_SIZE = 16
     EPOCHS = 1
-    PLAYER_EPOCHS = 1
     PLAYER_LOSS_PLAYER_LIMIT = 3
+    PLAYER_MIN_NUMBER_GAMES_PLAYED=41
+    # PLAYER_BATCH_SIZE=64
+    # PLAYER_EPOCHS = 1
 
 
 def make_model(input_dim):
@@ -140,7 +143,7 @@ def make_player_models(original_model, model_name, final_model=False):
 
         mapped_data = data.get_mapped_data(
             player_basketball_reference_id=player_basketball_reference_id)
-        if (len(mapped_data['x']) < 10):
+        if (len(mapped_data['x']) < PLAYER_MIN_NUMBER_GAMES_PLAYED):
             continue
         x_train, x_test, y_train, y_test, sw_train, sw_test = train_test_split(
             mapped_data['x'], mapped_data['y'], mapped_data['sw'], test_size=0.2, random_state=0)
@@ -151,50 +154,50 @@ def make_player_models(original_model, model_name, final_model=False):
             y_train = mapped_data['y']
             sw_train = mapped_data['sw']
 
-        model = make_model(input_dim=len(x_train[0]))
-        model.set_weights(original_model.get_weights())
-        for layer in model.layers[:-5]:
-            layer.trainable = False
-        if os.environ.get('DEBUG') is not None:
-            for layer in model.layers:
-                print(layer, layer.trainable)
-        model.compile('adam', loss='mse', metrics=['mse'])
-
-        model.fit(
-            x=x_train,
-            y=y_train,
-            sample_weight=sw_train,
-            batch_size=PLAYER_BATCH_SIZE,
-            epochs=PLAYER_EPOCHS,
-            verbose=0,
-            validation_data=(x_val, y_val, sw_val),
-            callbacks=[
-                EarlyStopping(patience=5)
-            ]
-        )
-
-        y_pred = model.predict(x_test)
-        mse = mean_squared_error(y_test, y_pred, sample_weight=sw_test)
+        # model = make_model(input_dim=len(x_train[0]))
+        # model.set_weights(original_model.get_weights())
+        # for layer in model.layers[:-5]:
+        #     layer.trainable = False
+        # if os.environ.get('DEBUG') is not None:
+        #     for layer in model.layers:
+        #         print(layer, layer.trainable)
+        #
+        # model.compile('adam', loss='mse', metrics=['mse'])
+        # model.fit(
+        #     x=x_train,
+        #     y=y_train,
+        #     sample_weight=sw_train,
+        #     batch_size=PLAYER_BATCH_SIZE,
+        #     epochs=PLAYER_EPOCHS,
+        #     verbose=0 if os.environ.get('FINAL', False) else 1,
+        #     validation_data=(x_val, y_val, sw_val),
+        #     callbacks=[
+        #         EarlyStopping(patience=5)
+        #     ]
+        # )
+        #
+        # y_pred = model.predict(x_test)
+        # mse = mean_squared_error(y_test, y_pred, sample_weight=sw_test)
 
         y_pred_og = original_model.predict(x_test)
-        mse_og = mean_squared_error(y_pred_og, y_pred, sample_weight=sw_test)
+        mse_og = mean_squared_error(y_test, y_pred_og, sample_weight=sw_test)
 
         player_losses = {
             'player_basketball_reference_id': player_basketball_reference_id,
             'train_samples': len(x_train),
             'test_samples': len(x_test),
 
-            'mse': mse,
-            'rmse': mse ** 0.5,
-
             'mse_og': mse_og,
             'rmse_og': mse_og ** 0.5
+
+            # 'mse': mse,
+            # 'rmse': mse ** 0.5
         }
-        save_model(model, model_name + '/' +
+        save_model(None, model_name + '/' +
                    player_basketball_reference_id, player_losses)
         losses.append(player_losses)
 
-    losses = sorted(losses, key=lambda k: k['rmse'])
+    losses = sorted(losses, key=lambda k: k['rmse_og'])
 
     table_data = [list(losses[0].keys())] + [list(l.values()) for l in losses]
     print('\n'.join([' '.join([str(c) for c in r]) for r in table_data]))
@@ -225,13 +228,18 @@ def save_model(model, model_name, losses={}):
     directory = MODEL_DIR + '/' + model_name
     if not os.path.exists(directory):
         os.makedirs(directory)
-    model.save(directory + '/model.h5')
+    if model:
+        model.save(directory + '/model.h5')
     with open(directory + '/losses.json', 'w') as fp:
         json.dump(losses, fp)
 
 
 def load_model(model_name):
-    model = keras_load_model(MODEL_DIR + '/' + model_name + '/model.h5')
+    model = None
+    try:
+        model = keras_load_model(MODEL_DIR + '/' + model_name + '/model.h5')
+    except OSError:
+        pass
     with open(MODEL_DIR + '/' + model_name + '/losses.json', 'r') as fp:
         losses = json.loads(fp.read())
     return model, losses

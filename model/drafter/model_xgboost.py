@@ -41,7 +41,7 @@ def make_model():
         'learning_rate': 0.1,
         'max_depth': 42,
         'min_child_weight': 32,
-        'n_estimators': 100,
+        'n_estimators': 50,
         'reg_alpha': 100,
         'subsample': 1
     }
@@ -116,7 +116,7 @@ def make_player_models(original_model, model_name, final_model=False):
 
         mapped_data = data.get_mapped_data(
             player_basketball_reference_id=player_basketball_reference_id)
-        if (len(mapped_data['x']) < 10):
+        if (len(mapped_data['x']) < 41):
             continue
         x_train, x_test, y_train, y_test, sw_train, sw_test = train_test_split(
             mapped_data['x'], mapped_data['y'], mapped_data['sw'], test_size=0.2, random_state=0)
@@ -127,21 +127,21 @@ def make_player_models(original_model, model_name, final_model=False):
             y_train = mapped_data['y']
             sw_train = mapped_data['sw']
 
-        regressor = make_model()
+        # regressor = make_model()
 
-        regressor.fit(
-            x_train,
-            y_train,
-            sample_weight=sw_train,
-            eval_metric='rmse',
-            eval_set=[(x_val, y_val)],
-            sample_weight_eval_set=[sw_val],
-            early_stopping_rounds=10,
-            verbose=True
-        )
+        # regressor.fit(
+        #     x_train,
+        #     y_train,
+        #     sample_weight=sw_train,
+        #     eval_metric='rmse',
+        #     eval_set=[(x_val, y_val)],
+        #     sample_weight_eval_set=[sw_val],
+        #     early_stopping_rounds=10,
+        #     verbose=True
+        # )
 
-        y_pred = regressor.predict(x_test)
-        mse = mean_squared_error(y_test, y_pred, sample_weight=sw_test)
+        # y_pred = regressor.predict(x_test)
+        # mse = mean_squared_error(y_test, y_pred, sample_weight=sw_test)
 
         y_pred_og = original_model.predict(x_test)
         mse_og = mean_squared_error(y_test, y_pred_og, sample_weight=sw_test)
@@ -151,13 +151,13 @@ def make_player_models(original_model, model_name, final_model=False):
             'train_samples': len(x_train),
             'test_samples': len(x_test),
 
-            'mse': mse,
-            'rmse': mse ** 0.5,
-
             'mse_og': mse_og,
             'rmse_og': mse_og ** 0.5
+
+            # 'mse': mse,
+            # 'rmse': mse ** 0.5
         }
-        save_model(regressor, model_name + '/' +
+        save_model(None, model_name + '/' +
                    player_basketball_reference_id, player_losses)
         losses.append(player_losses)
 
@@ -199,7 +199,11 @@ def save_model(model, model_name, losses={}):
 
 
 def load_model(model_name):
-    model = joblib.load(MODEL_DIR + '/' + model_name + '/model.dat')
+    model = None
+    try:
+        model = joblib.load(MODEL_DIR + '/' + model_name + '/model.dat')
+    except OSError:
+        pass
     with open(MODEL_DIR + '/' + model_name + '/losses.json', 'r') as fp:
         losses = json.loads(fp.read())
     return model, losses

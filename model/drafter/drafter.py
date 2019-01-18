@@ -11,7 +11,6 @@ from terminaltables import AsciiTable
 
 import services
 import data
-# import model_xgboost as model
 import model
 import scraping
 
@@ -124,8 +123,10 @@ def predict_with_player_models(df):
         try:
             __, player_losses = model.load_model(
                 model_name + '/' + d['player_basketball_reference_id'])
-        except:
-            pass
+        except OSError:
+            # Filter players who don't have their own model, aka, who don't
+            # have enough games for good predictions
+            continue
 
         prediction = model.predict(player_model, player_losses, [d.to_dict()])
         predictions.append(prediction[0])
@@ -155,7 +156,7 @@ def _row_to_table_row(row):
         'name': row['name'],
         'roster_positions': ', '.join(row['roster_positions']),
         'salary': row['salary_dollars'],
-        'difference': round(row['70_pct_conf'] - row['avg_points_per_game'], 2),
+        'difference': round(row['dk_fantasy_points_expected'] - row['avg_points_per_game'], 2),
         'avg_points_per_game': row['avg_points_per_game'],
         'predicted': row['_predictions']['dk_fantasy_points'],
         '70_pct_conf': round(row['70_pct_conf'], 2),
@@ -196,9 +197,9 @@ def filter_players_before_picking_roster(df):
 
 MIN_SPEND = 45000
 BUDGET = 50000
-MIN_ACCEPTABLE_POINTS = 250
-DIFFERENCE_BETWEEN_ROSTERS = 4
-N = 40
+MIN_ACCEPTABLE_POINTS = 200
+DIFFERENCE_BETWEEN_ROSTERS = 6
+N = 42
 k = 8
 
 
@@ -256,7 +257,7 @@ def pick_lineups(df):
             continue
 
         expected_points = sum(
-            [int(d['dk_fantasy_points_expected']) for d in roster])
+            [int(d['70_pct_conf']) for d in roster])
         if (expected_points < MIN_ACCEPTABLE_POINTS):
             continue
 
@@ -312,9 +313,9 @@ def pick_lineups(df):
     return df
 
 
-memory = Memory(location='./tmp', verbose=1)
-embellish_salary_data = memory.cache(embellish_salary_data)
-predict_with_player_models = memory.cache(predict_with_player_models)
+# memory = Memory(location='./tmp', verbose=1)
+# embellish_salary_data = memory.cache(embellish_salary_data)
+# predict_with_player_models = memory.cache(predict_with_player_models)
 
 
 def main():

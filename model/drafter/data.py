@@ -915,8 +915,8 @@ class Mappers:
         value_through_range = d['time_of_game'].timestamp() - self.stats['time_of_first_game'].timestamp()
         the_range = self.stats['time_of_most_recent_game'].timestamp() - self.stats['time_of_first_game'].timestamp()
         x = value_through_range / the_range
-        # https://www.desmos.com/calculator/jufedsvgvq
-        return 1 + ((5 - 1) / (1 + 10 ** ((0.5 - x) * 5)))
+        # https://www.desmos.com/calculator/irzszceutx
+        return 1 + ((10 - 1) / (1 + 10 ** ((0.95 - x) * 15))) + x ** 2
 
     def y_to_datum(self, y):
         return {'dk_fantasy_points': round(y[0], 2)}
