@@ -24,6 +24,10 @@ scrape-teams:
 	pipenv run python3 drafter/scraping.py teams
 
 
+scrape-games:
+	pipenv run python3 drafter/scraping.py games
+
+
 # Fitting
 
 fit-debug:

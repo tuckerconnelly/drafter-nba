@@ -187,18 +187,22 @@ def _scrape_team_roster(team, url):
     for tr in roster_trs:
 
         player_number_text = tr.find('[data-stat="number"]')[0].text.strip()
-        player_number = int(player_number_text) if player_number_text != '' else None
+        player_number = int(
+            player_number_text) if player_number_text != '' else None
         name = tr.find(
             '[data-stat="player"] a')[0].text.split('(TW)')[0].strip()
         player_basketball_reference_id = tr.find(
             '[data-stat="player"] a')[0].attrs['href'].split('/')[3].split('.html')[0].strip()
         position = tr.find('[data-stat="pos"]')[0].text.strip()
-        height_inches_parts = list(map(int, tr.find('[data-stat="height"]')[0].text.split('-')))
+        height_inches_parts = list(
+            map(int, tr.find('[data-stat="height"]')[0].text.split('-')))
         height_inches = height_inches_parts[0] * 12 + height_inches_parts[1]
         weight_lbs = int(tr.find('[data-stat="weight"]')[0].text.strip())
-        date_of_birth = dateparser.parse(tr.find('[data-stat="birth_date"]')[0].text.strip())
+        date_of_birth = dateparser.parse(
+            tr.find('[data-stat="birth_date"]')[0].text.strip())
         birth_country = tr.find('[data-stat="birth_country"]')[0].text.strip()
-        experience = int(tr.find('[data-stat="years_experience"]')[0].text.strip())
+        experience = int(
+            tr.find('[data-stat="years_experience"]')[0].text.strip())
 
         # pprint.pprint({
         #     'name': name,
@@ -318,6 +322,229 @@ def scrape_teams():
                 team, f'https://www.basketball-reference.com{season_a_href}')
 
 
+def _time_to_seconds(time):
+    parts = time.split(':')
+    return int(parts[0]) * 60 + int(parts[1])
+
+
+def _scrape_games_players(game_id, player_trs):
+
+    starter = True
+    players = []
+
+    for tr in player_trs:
+        ths = tr.find('th')
+        if len(ths) > 0 and ths[0].text.strip().lower() == 'reserves':
+            starter = False
+            continue
+
+        tds = tr.find('td')
+
+        if tds[0].text.strip().lower() == 'did not play':
+            continue
+
+        player = {
+            'starter': starter,
+            'game_basketball_reference_id': game_id,
+            'player_basketball_reference_id': ths[0].find('a')[0].attrs['href'].split('/')[3].split('.')[0],
+            'seconds_played': _time_to_seconds(tds[0].text.strip()),
+            'field_goals': int(tds[1].text.strip()),
+            'field_goals_attempted': int(tds[2].text.strip()),
+            'three_point_field_goals': int(tds[4].text.strip()),
+            'three_point_field_goals_attempted': int(tds[5].text.strip()),
+            'free_throws': int(tds[7].text.strip()),
+            'free_throws_attempted': int(tds[8].text.strip()),
+            'offensive_rebounds': int(tds[10].text.strip()),
+            'defensive_rebounds': int(tds[11].text.strip()),
+            'total_rebounds': int(tds[12].text.strip()),
+            'assists': int(tds[13].text.strip()),
+            'steals': int(tds[14].text.strip()),
+            'blocks': int(tds[15].text.strip()),
+            'turnovers': int(tds[16].text.strip()),
+            'personal_fouls': int(tds[17].text.strip()),
+            'points': int(tds[18].text.strip()),
+            'plus_minus': int(tds[19].text.strip())
+        }
+
+        players.append(player)
+
+    return players
+
+
+def scrape_games():
+    now = datetime.datetime.now()
+
+    time_of_last_game = datetime.datetime(2002, 10, 1)
+
+    if not os.environ.get('ALL'):
+        last_game = services.pgr.query(
+            '''
+                select g.time_of_game
+                from games g
+                order by g.time_of_game desc
+                limit 1
+            '''
+        ).first(as_dict=True)
+
+        time_of_last_game = last_game['time_of_game'] if last_game else time_of_last_game
+
+    delta = now - time_of_last_game
+    number_of_days = delta.days + 1
+    if os.environ.get('DEBUG'):
+        number_of_days = 1
+    for i in range(number_of_days):
+        date = time_of_last_game + datetime.timedelta(i)
+        url = f'https://www.basketball-reference.com/boxscores/?month={date.month}&day={date.day}&year={date.year}'
+
+        print(url)
+
+        session = HTMLSession()
+        r = session.get(url)
+        game_links = r.html.find('.game_summary .gamelink a')
+        game_ids = list(map(lambda gl: gl.attrs['href'].split(
+            '/')[2].split('.')[0], game_links))
+
+        if os.environ.get('DEBUG'):
+            game_ids = game_ids[0:1]
+
+        for game_id in game_ids:
+            game_url = f'https://www.basketball-reference.com/boxscores/{game_id}.html'
+            print(game_url)
+
+            game_session = HTMLSession()
+            r = game_session.get(game_url)
+
+            time_of_game = dateparser.parse(
+                f"{r.html.find('.scorebox_meta div:nth-of-type(1)')[0].text.strip()} EST")
+
+            game_data = {
+                'basketball_reference_id': game_id,
+                'away_team_basketball_reference_id': r.html.find(
+                    '.scorebox div:first-of-type [itemprop="name"]')[0].attrs['href'].split('/')[2],
+                'home_team_basketball_reference_id': r.html.find(
+                    '.scorebox div:nth-of-type(2) [itemprop="name"]')[0].attrs['href'].split('/')[2],
+                'away_score': int(r.html.find('.scorebox div:first-of-type .score')[0].text.strip()),
+                'home_score': int(r.html.find('.scorebox div:nth-of-type(2) .score')[0].text.strip()),
+                'time_of_game': time_of_game,
+                'season': time_of_game.year + 1 if time_of_game.month > 7 else time_of_game.year,
+                'arena': r.html.find('.scorebox_meta div:nth-of-type(2)')[0].text.strip(),
+                'away_games_players': _scrape_games_players(game_id, r.html.find('#all_four_factors + div + div tbody tr')),
+                'home_games_players': _scrape_games_players(game_id, r.html.find('#all_four_factors + div + div + div + div tbody tr'))
+            }
+
+            pprint.pprint(game_data)
+
+            game = services.pgr.query(
+                '''
+                    select *
+                    from games
+                    where basketball_reference_id = :basketball_reference_id
+                ''',
+                basketball_reference_id=game_id
+            ).first(as_dict=True)
+
+            if not game:
+                game = services.pgw.query(
+                    '''
+                        insert into games (
+                            basketball_reference_id,
+                            home_team_basketball_reference_id,
+                            away_team_basketball_reference_id,
+                            home_score,
+                            away_score,
+                            arena,
+                            time_of_game,
+                            season
+                        )
+                        values (
+                            :basketball_reference_id,
+                            :home_team_basketball_reference_id,
+                            :away_team_basketball_reference_id
+                            :home_score,
+                            :away_score,
+                            :arena,
+                            :time_of_game,
+                            :season
+                        )
+                    ''',
+                    **game_data
+                )
+
+            for games_player in [*game_data['away_games_players'], *game_data['home_games_players']]:
+                in_db_gp = services.pgr.query(
+                    '''
+                        select *
+                        from games_players
+                        where game_basketball_reference_id = :game_basketball_reference_id
+                        and player_basketball_reference_id = :player_basketball_reference_id
+                    ''',
+                    **games_player
+                ).first(as_dict=True)
+
+                if (in_db_gp):
+                    continue
+
+                in_db_gb = services.pgw.query(
+                    '''
+                        insert into games_players (
+                            starter,
+                            game_basketball_reference_id,
+                            player_basketball_reference_id,
+                            seconds_played,
+                            field_goals,
+                            field_goals_attempted,
+                            three_point_field_goals,
+                            three_point_field_goals_attempted,
+                            free_throws,
+                            free_throws_attempted,
+                            offensive_rebounds,
+                            defensive_rebounds,
+                            total_rebounds,
+                            assists,
+                            steals,
+                            blocks,
+                            turnovers,
+                            personal_fouls,
+                            points,
+                            plus_minus
+                        )
+                        values (
+                            :starter,
+                            :game_basketball_reference_id,
+                            :player_basketball_reference_id,
+                            :seconds_played,
+                            :field_goals,
+                            :field_goals_attempted,
+                            :three_point_field_goals,
+                            :three_point_field_goals_attempted,
+                            :free_throws,
+                            :free_throws_attempted,
+                            :offensive_rebounds,
+                            :defensive_rebounds,
+                            :total_rebounds,
+                            :assists,
+                            :steals,
+                            :blocks,
+                            :turnovers,
+                            :personal_fouls,
+                            :points,
+                            :plus_minus
+                        )
+                    ''',
+                    **gp
+                )
+
+                data.cache_single_games_player({
+                    **in_db_gp,
+                    'season': game['season'],
+                    'time_of_game': game['time_of_game']
+                })
+
+            # NOTE Caching the game depends on the games_players already being cached
+
+            data.cache_single_game(game)
+
+
 memory = Memory(location='./tmp', verbose=1)
 get_lineups = memory.cache(get_lineups)
 
@@ -328,5 +555,7 @@ if __name__ == '__main__':
         get_lineups()
     elif arg == 'teams':
         scrape_teams()
+    elif arg == 'games':
+        scrape_games()
     else:
         print(f'Argument not recognized: {arg}')

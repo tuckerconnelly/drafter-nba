@@ -8,6 +8,7 @@ import functools
 import logging
 import time
 import multiprocessing
+import json
 
 from sklearn.preprocessing import LabelBinarizer, MultiLabelBinarizer
 import numpy as np
@@ -82,8 +83,8 @@ def calculate_fantasy_score(stats):
         + stats['steals'] * 2
         + stats['blocks'] * 2
         + stats['turnovers'] * -0.5
-        + (1.5 if len([True for k in stats if stats[k] >= 10]) > 2 else 0)
-        + (3 if len([True for k in stats if stats[k] >= 10]) > 3 else 0)
+        + (1.5 if len([True for k in stats if isinstance(stats[k], int) and stats[k] >= 10]) > 2 else 0)
+        + (3 if len([True for k in stats if isinstance(stats[k], int) and stats[k] >= 10]) > 3 else 0)
     )
 
 
@@ -202,9 +203,9 @@ def team_get_stats_last_games_from_pg(
     }
 
 
-def cache_single_games_players(games_player):
+def cache_single_games_player(games_player):
     assert games_player['player_basketball_reference_id']
-    assert games_players['season']
+    assert games_player['season']
     assert games_player['time_of_game']
 
     services.pgw.query(
@@ -213,8 +214,8 @@ def cache_single_games_players(games_player):
             where game_basketball_reference_id = :game_basketball_reference_id
             and player_basketball_reference_id = :player_basketball_reference_id
         ''',
-        game_basketball_reference_id=games_players['game_basketball_reference_id'],
-        player_basketball_reference_id=games_players['player_basketball_reference_id']
+        game_basketball_reference_id=games_player['game_basketball_reference_id'],
+        player_basketball_reference_id=games_player['player_basketball_reference_id']
     )
 
     stats_last_games = get_stats_last_games_from_pg(
@@ -240,15 +241,15 @@ def cache_single_games_players(games_player):
                 :seconds_played_last_games
             )
         ''',
-        game_basketball_reference_id=games_players['game_basketball_reference_id'],
-        player_basketball_reference_id=games_players['player_basketball_reference_id'],
+        game_basketball_reference_id=games_player['game_basketball_reference_id'],
+        player_basketball_reference_id=games_player['player_basketball_reference_id'],
         dk_fantasy_points=calculate_fantasy_score(games_player),
-        dk_fantasy_points_last_games=stats_last_games['dk_fantasy_points_last_games'],
-        seconds_played_last_games=stats_last_games['seconds_played_last_games']
+        dk_fantasy_points_last_games=json.dumps(stats_last_games['dk_fantasy_points_last_games']),
+        seconds_played_last_games=json.dumps(stats_last_games['seconds_played_last_games'])
     )
 
 
-def cache_single_game():
+def cache_single_game(game):
     assert game['basketball_reference_id']
     assert game['season']
     assert game['time_of_game']
@@ -270,7 +271,7 @@ def cache_single_game():
         basketball_reference_id=game['basketball_reference_id'],
         away_team_basketball_reference_id=game['away_team_basketball_reference_id']
     ).all(as_dict=True)
-    away_starters = map(lambda gp: gp['player_basketball_reference_id'], away_starters)
+    away_starters = list(map(lambda gp: gp['player_basketball_reference_id'], away_starters))
 
     assert len(away_starters) == 5
 
@@ -289,7 +290,7 @@ def cache_single_game():
         basketball_reference_id=game['basketball_reference_id'],
         home_team_basketball_reference_id=game['home_team_basketball_reference_id']
     ).all(as_dict=True)
-    home_starters = map(lambda gp: gp['player_basketball_reference_id'], home_starters)
+    home_starters = list(map(lambda gp: gp['player_basketball_reference_id'], home_starters))
 
     assert len(home_starters) == 5
 
@@ -307,8 +308,7 @@ def cache_single_game():
           group by g.id
         ''',
         game_basketball_reference_id=game['basketball_reference_id']
-    ).all(as_dict=True)
-    away_dk_fantasy_points_allowed = map(lambda gpc: gpc['dk_fantasy_points_allowed'], away_dk_fantasy_points_allowed)
+    ).first(as_dict=True)['dk_fantasy_points_allowed']
 
     home_dk_fantasy_points_allowed = services.pgr.query(
         '''
@@ -324,8 +324,7 @@ def cache_single_game():
           group by g.id
         ''',
         game_basketball_reference_id=game['basketball_reference_id']
-    ).all(as_dict=True)
-    home_dk_fantasy_points_allowed = map(lambda gpc: gpc['dk_fantasy_points_allowed'], home_dk_fantasy_points_allowed)
+    ).first(as_dict=True)['dk_fantasy_points_allowed']
 
     away_team_stats_last_games = team_get_stats_last_games_from_pg(
         team_basketball_reference_id=game['away_team_basketball_reference_id'],
@@ -341,7 +340,7 @@ def cache_single_game():
 
     services.pgw.query(
         '''
-            delete from game_computed
+            delete from games_computed
             where game_basketball_reference_id = :game_basketball_reference_id
         ''',
         game_basketball_reference_id=game['basketball_reference_id']
@@ -377,16 +376,16 @@ def cache_single_game():
             )
         ''',
         game_basketball_reference_id=game['basketball_reference_id'],
-        away_starters=away_starters,
-        home_starters=home_starters,
-        away_wins=away_team_stats_last_games['wins'],
-        away_losses=away_team_stats_last_games['losses'],
-        home_wins=home_team_stats_last_games['wins'],
-        home_losses=home_team_stats_last_games['losses'],
+        away_starters=json.dumps(away_starters),
+        home_starters=json.dumps(home_starters),
+        away_wins=json.dumps(away_team_stats_last_games['wins']),
+        away_losses=json.dumps(away_team_stats_last_games['losses']),
+        home_wins=json.dumps(home_team_stats_last_games['wins']),
+        home_losses=json.dumps(home_team_stats_last_games['losses']),
         away_dk_fantasy_points_allowed=away_dk_fantasy_points_allowed,
         home_dk_fantasy_points_allowed=home_dk_fantasy_points_allowed,
-        away_dk_fantasy_points_allowed_last_games=away_team_stats_last_games['dk_fantasy_points_allowed_last_games'],
-        home_dk_fantasy_points_allowed_last_games=home_team_stats_last_games['dk_fantasy_points_allowed_last_games']
+        away_dk_fantasy_points_allowed_last_games=json.dumps(away_team_stats_last_games['dk_fantasy_points_allowed_last_games']),
+        home_dk_fantasy_points_allowed_last_games=json.dumps(home_team_stats_last_games['dk_fantasy_points_allowed_last_games'])
     )
 
 
@@ -428,7 +427,7 @@ def cache_data():
         ' (', progressbar.ETA(), ') '
     ]
     for i in progressbar.progressbar(range(len(games_players)), widgets=widgets):
-        cache_single_games_players(games_players[i])
+        cache_single_games_player(games_players[i])
 
     print('Caching games')
 
