@@ -24,8 +24,21 @@ scrape-teams:
 	pipenv run python3 drafter/scraping.py teams
 
 
+scrape-games-debug:
+	DEBUG=1 pipenv run python3 drafter/scraping.py games
+
+
 scrape-games:
 	pipenv run python3 drafter/scraping.py games
+
+
+# Data
+
+cache-data-debug:
+	DEBUG=1 pipenv run python3 drafter/data.py cache-data
+
+cache-data:
+	pipenv run python3 drafter/data.py cache-data
 
 
 # Fitting
