@@ -7,3 +7,8 @@ tmp
 .pytest_cache
 
 dump*.sql
+*.db
+*.db-shm
+*.db-wal
+
+.vscode

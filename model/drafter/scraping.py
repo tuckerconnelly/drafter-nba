@@ -41,7 +41,7 @@ def parse_salary_file():
     parsed_data = []
 
     for i, row in df.iterrows():
-        in_db_player = services.pgr.query("""
+        in_db_player = services.sqw.query("""
             select
               p.basketball_reference_id,
               p.birth_country,
@@ -149,7 +149,7 @@ def _scrape_team(url):
     basketball_reference_id = r.html.find('[rel="canonical"]')[
         0].attrs['href'].split('/')[4]
 
-    team = services.pgr.query(
+    team = services.sqw.query(
         '''
             select *
             from teams
@@ -159,7 +159,7 @@ def _scrape_team(url):
     ).first(as_dict=True)
 
     if not team:
-        team = services.pgw.query(
+        team = services.sqw.query(
             '''
                 insert into teams (name, basketball_reference_id)
                 values (:name, :basketball_reference_id)
@@ -218,7 +218,7 @@ def _scrape_team_roster(team, url):
         assert player_basketball_reference_id
 
 
-        in_db_player = services.pgr.query(
+        in_db_player = services.sqw.query(
             '''
                 select *
                 from players
@@ -228,7 +228,7 @@ def _scrape_team_roster(team, url):
         ).first(as_dict=True)
 
         if not in_db_player:
-            in_db_player = services.pgw.query(
+            in_db_player = services.sqw.query(
                 '''
                     insert into players (
                         basketball_reference_id,
@@ -250,7 +250,7 @@ def _scrape_team_roster(team, url):
                 birth_country=birth_country
             ).first(as_dict=True)
 
-        services.pgw.query(
+        services.sqw.query(
             '''
                 update teams_players
                 set currently_on_this_team = false
@@ -263,7 +263,7 @@ def _scrape_team_roster(team, url):
             season=season
         )
 
-        in_db_team_player = services.pgw.query(
+        in_db_team_player = services.sqw.query(
             '''
                 insert into teams_players (
                     player_basketball_reference_id,
@@ -380,7 +380,7 @@ def _scrape_player_page(player_basketball_reference_id):
 
 
 def _ensure_player_exists_on_roster(player_basketball_reference_id, team_basketball_reference_id, season):
-    in_db_gp = services.pgr.query(
+    in_db_gp = services.sqw.query(
         '''
             select id
             from teams_players
@@ -400,7 +400,7 @@ def _ensure_player_exists_on_roster(player_basketball_reference_id, team_basketb
 
     player_data = _scrape_player_page(player_basketball_reference_id)
 
-    in_db_p = services.pgr.query(
+    in_db_p = services.sqw.query(
         '''
             select id
             from players
@@ -410,7 +410,7 @@ def _ensure_player_exists_on_roster(player_basketball_reference_id, team_basketb
     ).first(as_dict=True)
 
     if not in_db_p:
-        services.pgw.query(
+        services.sqw.query(
             '''
                 insert into players (
                     basketball_reference_id,
@@ -432,7 +432,7 @@ def _ensure_player_exists_on_roster(player_basketball_reference_id, team_basketb
         )
 
     for season in player_data['seasons']:
-        existing_tp = services.pgr.query(
+        existing_tp = services.sqw.query(
             '''
                 select id
                 from teams_players
@@ -451,7 +451,7 @@ def _ensure_player_exists_on_roster(player_basketball_reference_id, team_basketb
         # NOTE No player number, difficult (but not impossible) to scrape off
         # of player plage
 
-        services.pgw.query(
+        services.sqw.query(
             '''
                 insert into teams_players (
                     player_basketball_reference_id,
@@ -563,7 +563,7 @@ def _insert_games_player(games_player_data, game, player_team_basketball_referen
         game['season']
     )
 
-    in_db_gp = services.pgr.query(
+    in_db_gp = services.sqw.query(
         '''
             select id
             from games_players
@@ -575,7 +575,7 @@ def _insert_games_player(games_player_data, game, player_team_basketball_referen
     ).first(as_dict=True)
 
     if not in_db_gp:
-        services.pgw.query(
+        services.sqw.query(
             '''
                 insert into games_players (
                     starter,
@@ -660,7 +660,7 @@ def scrape_games():
     if os.environ.get('FROM_DATE'):
         from_date = dateparser.parse(os.environ.get('FROM_DATE'))
     else:
-        last_game = services.pgr.query(
+        last_game = services.sqw.query(
             '''
                 select g.time_of_game
                 from games g
@@ -728,7 +728,7 @@ def scrape_games():
 
             # pprint.pprint(game_data)
 
-            game = services.pgr.query(
+            game = services.sqw.query(
                 '''
                     select *
                     from games
@@ -738,7 +738,7 @@ def scrape_games():
             ).first(as_dict=True)
 
             if not game:
-                game = services.pgw.query(
+                game = services.sqw.query(
                     '''
                         insert into games (
                             basketball_reference_id,

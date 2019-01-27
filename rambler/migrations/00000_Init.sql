@@ -1,122 +1,115 @@
 -- rambler up
 
--- Every table has
--- * id
--- * created_at
--- * updated_at
---
--- Foreign keys use `table_name_id` format, with `table_name` in the plural. Examples:
--- * workspaces_id
--- * users_id
---
--- Enums are text fields with constraints, which are much easier to update than traditional enums
-
-create or replace function update_updated_at() returns trigger as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$ language 'plpgsql';
-
-create table teams (
-  id serial not null primary key,
-  created_at timestamp not null default now(),
-  updated_at timestamp not null default now(),
-
-  basketball_reference_id text unique,
-  name text
-);
-
-create trigger update_updated_at before update
-  on teams for each row execute procedure update_updated_at();
-
-create table players (
-  id serial not null primary key,
-  created_at timestamp not null default now(),
-  updated_at timestamp not null default now(),
-
-  basketball_reference_id text unique,
-  name text,
-  date_of_birth date,
-  birth_country text
-);
-
-create trigger update_updated_at before update
-  on players for each row execute procedure update_updated_at();
-
-create table teams_players (
-  id serial not null primary key,
-  created_at timestamp not null default now(),
-  updated_at timestamp not null default now(),
-
-  team_basketball_reference_id text references teams(basketball_reference_id),
-  player_basketball_reference_id text references players(basketball_reference_id),
-
-  season int,
-  player_number int,
-  position text,
-  height_inches int,
-  weight_lbs int,
-  experience int
-);
-
-create trigger update_updated_at before update
-  on teams_players for each row execute procedure update_updated_at();
-
 create table games (
-  id serial not null primary key,
-  created_at timestamp not null default now(),
-  updated_at timestamp not null default now(),
-
-  season int,
-  basketball_reference_id text unique,
-  home_team_basketball_reference_id text references teams(basketball_reference_id),
-  away_team_basketball_reference_id text references teams(basketball_reference_id),
-  home_score int,
-  away_score int,
-  arena text,
-  time_of_game timestamp without time zone
+    id integer primary key autoincrement,
+    created_at datetime default current_timestamp not null,
+    updated_at datetime default current_timestamp not null,
+    basketball_reference_id text unique,
+    season integer,
+    home_team_basketball_reference_id text,
+    away_team_basketball_reference_id text,
+    home_score integer,
+    away_score integer,
+    arena text,
+    time_of_game datetime
 );
-
-create trigger update_updated_at before update
-  on games for each row execute procedure update_updated_at();
 
 create table games_players (
-  id serial not null primary key,
-  created_at timestamp not null default now(),
-  updated_at timestamp not null default now(),
-
-  player_basketball_reference_id text references players(basketball_reference_id),
-  game_basketball_reference_id text references games(basketball_reference_id),
-
-  starter boolean,
-  seconds_played int,
-  field_goals int,
-  field_goals_attempted int,
-  three_point_field_goals int,
-  three_point_field_goals_attempted int,
-  free_throws int,
-  free_throws_attempted int,
-  offensive_rebounds int,
-  defensive_rebounds int,
-  total_rebounds int,
-  assists int,
-  steals int,
-  blocks int,
-  turnovers int,
-  personal_fouls int,
-  points int
+    id integer primary key autoincrement,
+    created_at datetime default current_timestamp not null,
+    updated_at datetime default current_timestamp not null,
+    game_basketball_reference_id text,
+    player_basketball_reference_id text,
+    starter boolean,
+    seconds_played integer,
+    field_goals integer,
+    field_goals_attempted integer,
+    three_point_field_goals integer,
+    three_point_field_goals_attempted integer,
+    free_throws integer,
+    free_throws_attempted integer,
+    offensive_rebounds integer,
+    defensive_rebounds integer,
+    total_rebounds integer,
+    assists integer,
+    steals integer,
+    blocks integer,
+    turnovers integer,
+    personal_fouls integer,
+    points integer,
+    plus_minus integer,
+    unique(game_basketball_reference_id,player_basketball_reference_id)
 );
 
-create trigger update_updated_at before update
-  on games_players for each row execute procedure update_updated_at();
+create table games_players_computed (
+    id integer primary key autoincrement,
+    created_at datetime default current_timestamp not null,
+    updated_at datetime default current_timestamp not null,
+    game_basketball_reference_id text,
+    player_basketball_reference_id text,
+    dk_fantasy_points real,
+    dk_fantasy_points_last_games text default '[]',
+    seconds_played_last_games text default '[]',
+    times_of_last_games text default '[]',
+    times_of_last_games_against_opp_away text default '[]',
+    times_of_last_games_against_opp_home text default '[]',
+    dk_fantasy_points_last_games_against_opp_away text default '[]',
+    dk_fantasy_points_last_games_against_opp_home text default '[]',
+    seconds_played_last_games_against_opp_away text default '[]',
+    seconds_played_last_games_against_opp_home text default '[]',
+    plus_minus_last_games text default '[]',
+    plus_minus_last_games_against_opp_away text default '[]',
+    plus_minus_last_games_against_opp_home text default '[]',
+    dk_fantasy_points_per_minute real,
+    dk_fantasy_points_per_minute_last_games text default '[]',
+    dk_fantasy_points_per_minute_last_games_against_opp_away text default '[]',
+    dk_fantasy_points_per_minute_last_games_against_opp_home text default '[]',
+    opp_dk_fantasy_points_allowed_vs_position_last_game_only real,
+    opp_dk_fantasy_points_allowed_vs_position_last_games text default '[]',
+    opp_dk_fantasy_points_allowed_vs_position_last_games_home text default '[]',
+    opp_dk_fantasy_points_allowed_vs_position_last_games_away text default '[]',
+    unique(game_basketball_reference_id, player_basketball_reference_id)
+);
+
+create table players (
+    id integer primary key autoincrement,
+    created_at datetime default current_timestamp not null,
+    updated_at datetime default current_timestamp not null,
+    basketball_reference_id text unique,
+    name text,
+    date_of_birth date,
+    birth_country text
+);
+
+create table teams (
+    id integer primary key autoincrement,
+    created_at datetime default current_timestamp not null,
+    updated_at datetime default current_timestamp not null,
+    basketball_reference_id text unique,
+    name text
+);
+
+create table teams_players (
+    id integer primary key autoincrement,
+    created_at datetime default current_timestamp not null,
+    updated_at datetime default current_timestamp not null,
+    team_basketball_reference_id text,
+    player_basketball_reference_id text,
+    season integer,
+    player_number integer,
+    position text,
+    height_inches integer,
+    weight_lbs integer,
+    experience integer,
+    currently_on_this_team boolean,
+    unique(team_basketball_reference_id, player_basketball_reference_id, season)
+);
 
 -- rambler down
 
+drop table teams_players;
+drop table teams;
+drop table players;
+drop table games_players_computed;
 drop table games_players;
 drop table games;
-drop table teams_players;
-drop table players;
-drop table teams;
-
-drop function update_updated_at;

@@ -1,6 +1,8 @@
 import os
 
-import records
+import sqlite3
 
-pgr = records.Database(os.environ['PG_READ_URL'])
-pgw = records.Database(os.environ['PG_WRITE_URL'])
+print(os.environ.get('SQL_WRITE_URL'))
+
+sql = sqlite3.connect(os.environ['SQL_WRITE_URL'])
+sql.row_factory = sqlite3.Row

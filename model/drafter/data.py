@@ -17,6 +17,7 @@ from sklearn.preprocessing import LabelBinarizer, MultiLabelBinarizer
 import numpy as np
 from joblib import Memory
 import progressbar
+import dateparser
 
 import services
 
@@ -65,7 +66,7 @@ class MeanMinMaxEncoder:
         self.min = min
         self.max = max
         self.output_range = output_max - output_min
-        self.output_min = outout_min
+        self.output_min = output_min
 
     def transform(self, raw_value):
         return float((raw_value - self.mean) / (self.max - self.min)) * self.output_range + 1 + self.output_min
@@ -103,6 +104,14 @@ def calculate_fantasy_score(stats):
     if stats['seconds_played'] == 0:
         return 0
 
+    double_double_stat_count = len(list(filter(lambda s: isinstance(s, int) and s >= 10, [
+        stats['points'],
+        stats['total_rebounds'],
+        stats['assists'],
+        stats['steals'],
+        stats['blocks'],
+    ])))
+
     return (
         (stats['points'] or 0)
         + (stats['three_point_field_goals'] or 0) * 0.5
@@ -111,9 +120,8 @@ def calculate_fantasy_score(stats):
         + (stats['steals'] or 0) * 2
         + (stats['blocks'] or 0) * 2
         + (stats['turnovers'] or 0) * -0.5
-        + (1.5 if len([True for k in stats if isinstance(stats[k], int) and stats[k] >= 10]) > 2 else 0)
-        + (3 if len([True for k in stats if isinstance(stats[k],
-                                                     int) and stats[k] >= 10]) > 3 else 0)
+        + (1.5 if double_double_stat_count >= 2 else 0)
+        + (3 if double_double_stat_count >= 3 else 0)
     )
 
 
@@ -140,10 +148,11 @@ def get_stats_last_games_from_pg(
     team_sql = ''
     if away_team and home_team:
         team_sql = f'''
-            and g.away_team_basketball_reference_id = :away_team
-            and g.home_team_basketball_reference_id = :home_team
+            and g.away_team_basketball_reference_id = '{away_team}'
+            and g.home_team_basketball_reference_id = '{home_team}'
         '''
-    rows = services.pgr.query(f"""
+
+    rows = services.sql.execute(f"""
         select
           gp.points,
           gp.three_point_field_goals,
@@ -159,73 +168,60 @@ def get_stats_last_games_from_pg(
 
           g.time_of_game
         from games g
-        left join games_players gp
+        left join games_players as gp
           on gp.game_basketball_reference_id = g.basketball_reference_id
-          and gp.player_basketball_reference_id = :player_basketball_reference_id
-          and gp.seconds_played < :min_seconds_played_in_game
-        inner join teams_players tp
-          on tp.player_basketball_reference_id = :player_basketball_reference_id
+          and gp.player_basketball_reference_id = '{player_basketball_reference_id}'
+          and gp.seconds_played > {MIN_SECONDS_PLAYED_IN_GAME}
+        inner join teams_players as tp
+          on tp.player_basketball_reference_id = '{player_basketball_reference_id}'
           and tp.season = g.season
-        where g.season = :season
+        where g.season = {season}
         and (
           g.home_team_basketball_reference_id = tp.team_basketball_reference_id
           or g.away_team_basketball_reference_id = tp.team_basketball_reference_id
         )
-        and g.time_of_game < :current_game_date
+        and g.time_of_game < datetime('{current_game_date}')
         {team_sql}
-        order by g.time_of_game desc
-    """,
-                              player_basketball_reference_id=player_basketball_reference_id,
-                              season=season,
-                              current_game_date=current_game_date,
-                              min_seconds_played_in_game=MIN_SECONDS_PLAYED_IN_GAME,
-                              away_team=away_team,
-                              home_team=home_team
-                              )
+        order by datetime(g.time_of_game) desc
+    """).fetchall()
 
-    opp_teams_rows = services.pgr.query(
+    opp_teams_rows = services.sql.execute(
         f"""
             select
                 sum(gpc.dk_fantasy_points) as opp_dk_fantasy_points_allowed_vs_position
-            from games_players_computed gpc
-            inner join games g
+            from games_players_computed as gpc
+            inner join games as g
            	  on g.basketball_reference_id = gpc.game_basketball_reference_id
-            inner join teams_players tp
+            inner join teams_players as tp
               on tp.player_basketball_reference_id = gpc.player_basketball_reference_id
               and tp.season = g.season
-              and tp.team_basketball_reference_id != :opp_team_basketball_reference_id
-              and tp.position = :player_position
+              and tp.team_basketball_reference_id != '{opp_team}'
+              and tp.position = '{player_position}'
             where (
-              g.away_team_basketball_reference_id = :opp_team_basketball_reference_id
-              or g.home_team_basketball_reference_id = :opp_team_basketball_reference_id
+              g.away_team_basketball_reference_id = '{opp_team}'
+              or g.home_team_basketball_reference_id = '{opp_team}'
             )
-            and g.season = :season
-            and g.time_of_game < :current_game_date
+            and g.season = {season}
+            and g.time_of_game < datetime('{current_game_date}')
             {team_sql}
             group by g.id
-            order by g.time_of_game desc
-        """,
-        opp_team_basketball_reference_id=opp_team,
-        player_position=player_position,
-        season=season,
-        current_game_date=current_game_date,
-        away_team=away_team,
-        home_team=home_team
-    ).all(as_dict=True)
+            order by datetime(g.time_of_game) desc
+        """
+    ).fetchall()
 
     return {
-        'points_last_games_last_games': list(map(lambda r: r.points, rows)),
-        'three_point_field_goals_last_games': list(map(lambda r: r.three_point_field_goals, rows)),
-        'total_rebounds_last_games': list(map(lambda r: r.total_rebounds, rows)),
-        'assists_last_games': list(map(lambda r: r.assists, rows)),
-        'blocks_last_games': list(map(lambda r: r.blocks, rows)),
-        'steals_last_games': list(map(lambda r: r.steals, rows)),
-        'turnovers_last_games': list(map(lambda r: r.turnovers, rows)),
-        'seconds_played_last_games': list(map(lambda r: r.seconds_played, rows)),
-        'dk_fantasy_points_last_games': list(map(lambda r: calculate_fantasy_score(r.as_dict()), rows)),
-        'times_of_games': list(map(lambda r: r.time_of_game, rows)),
-        'plus_minus_last_games': list(map(lambda r: r.plus_minus, rows)),
-        'dk_fantasy_points_per_minute_last_games': list(map(lambda r: calculate_fppm(r.as_dict()), rows)),
+        'points_last_games_last_games': list(map(lambda r: r['points'], rows)),
+        'three_point_field_goals_last_games': list(map(lambda r: r['three_point_field_goals'], rows)),
+        'total_rebounds_last_games': list(map(lambda r: r['total_rebounds'], rows)),
+        'assists_last_games': list(map(lambda r: r['assists'], rows)),
+        'blocks_last_games': list(map(lambda r: r['blocks'], rows)),
+        'steals_last_games': list(map(lambda r: r['steals'], rows)),
+        'turnovers_last_games': list(map(lambda r: r['turnovers'], rows)),
+        'seconds_played_last_games': list(map(lambda r: r['seconds_played'], rows)),
+        'dk_fantasy_points_last_games': list(map(lambda r: calculate_fantasy_score(r), rows)),
+        'times_of_games': list(map(lambda r: r['time_of_game'], rows)),
+        'plus_minus_last_games': list(map(lambda r: r['plus_minus'], rows)),
+        'dk_fantasy_points_per_minute_last_games': list(map(lambda r: calculate_fppm(r), rows)),
         'opp_dk_fantasy_points_allowed_vs_position_last_games': list(map(lambda r: r['opp_dk_fantasy_points_allowed_vs_position'], opp_teams_rows))
     }
 
@@ -236,28 +232,9 @@ def cache_single_games_player(
     opp_team_basketball_reference_id,
     season,
     time_of_game,
-    position=None
+    position
 ):
     assert games_player['player_basketball_reference_id']
-
-    position = games_player.get('position')
-    if not position:
-        position_res = services.pgr.query(
-            '''
-                select position
-                from teams_players
-                where player_basketball_reference_id = :player_basketball_reference_id
-                and team_basketball_reference_id = :player_team_basketball_reference_id
-                and season = :season
-            ''',
-            player_basketball_reference_id=games_player['player_basketball_reference_id'],
-            player_team_basketball_reference_id=player_team_basketball_reference_id,
-            season=season
-        ).first(as_dict=True)
-
-        position = position_res['position']
-
-    assert position
 
     stats_last_games = get_stats_last_games_from_pg(
         player_basketball_reference_id=games_player['player_basketball_reference_id'],
@@ -267,6 +244,9 @@ def cache_single_games_player(
         opp_team=opp_team_basketball_reference_id,
         player_position=position
     )
+    opp_dk_fantasy_points_allowed_vs_position_last_game_only = None
+    if len(stats_last_games['opp_dk_fantasy_points_allowed_vs_position_last_games']) > 0:
+        opp_dk_fantasy_points_allowed_vs_position_last_game_only = stats_last_games['opp_dk_fantasy_points_allowed_vs_position_last_games'][0] 
 
     stats_last_games_against_opp_away = get_stats_last_games_from_pg(
         player_basketball_reference_id=games_player['player_basketball_reference_id'],
@@ -290,18 +270,15 @@ def cache_single_games_player(
         home_team=player_team_basketball_reference_id
     )
 
-    services.pgw.query(
-        '''
+    services.sql.execute(
+        f'''
             delete from games_players_computed
-            where game_basketball_reference_id = :game_basketball_reference_id
-            and player_basketball_reference_id = :player_basketball_reference_id
-        ''',
-        game_basketball_reference_id=games_player['game_basketball_reference_id'],
-        player_basketball_reference_id=games_player['player_basketball_reference_id']
-    )
+            where game_basketball_reference_id = '{games_player['game_basketball_reference_id']}'
+            and player_basketball_reference_id = '{games_player['player_basketball_reference_id']}'
+        ''')
 
-    gpc = services.pgw.query(
-        '''
+    services.sql.execute(
+        f'''
             insert into games_players_computed (
                 game_basketball_reference_id,
                 player_basketball_reference_id,
@@ -328,109 +305,68 @@ def cache_single_games_player(
                 dk_fantasy_points_per_minute_last_games_against_opp_away,
                 dk_fantasy_points_per_minute_last_games_against_opp_home,
 
+                opp_dk_fantasy_points_allowed_vs_position_last_game_only,
                 opp_dk_fantasy_points_allowed_vs_position_last_games,
                 opp_dk_fantasy_points_allowed_vs_position_last_games_away,
                 opp_dk_fantasy_points_allowed_vs_position_last_games_home
             )
             values (
-                :game_basketball_reference_id,
-                :player_basketball_reference_id,
+                '{games_player['game_basketball_reference_id']}',
+                '{games_player['player_basketball_reference_id']}',
 
-                :times_of_last_games,
-                :times_of_last_games_against_opp_away,
-                :times_of_last_games_against_opp_home,
+                '{json.dumps(stats_last_games['times_of_games'])}',
+                '{json.dumps(stats_last_games_against_opp_away['times_of_games'])}',
+                '{json.dumps(stats_last_games_against_opp_home['times_of_games'])}',
 
-                :dk_fantasy_points,
-                :dk_fantasy_points_last_games,
-                :dk_fantasy_points_last_games_against_opp_away,
-                :dk_fantasy_points_last_games_against_opp_home,
+                {json.dumps(calculate_fantasy_score(games_player))},
+                '{json.dumps(stats_last_games['dk_fantasy_points_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_away['dk_fantasy_points_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_home['dk_fantasy_points_last_games'])}',
 
-                :seconds_played_last_games,
-                :seconds_played_last_games_against_opp_away,
-                :seconds_played_last_games_against_opp_home,
+                '{json.dumps(stats_last_games['seconds_played_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_away['seconds_played_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_home['seconds_played_last_games'])}',
 
-                :plus_minus_last_games,
-                :plus_minus_last_games_against_opp_away,
-                :plus_minus_last_games_against_opp_home,
+                '{json.dumps(stats_last_games['plus_minus_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_away['plus_minus_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_home['plus_minus_last_games'])}',
 
-                :dk_fantasy_points_per_minute,
-                :dk_fantasy_points_per_minute_last_games,
-                :dk_fantasy_points_per_minute_last_games_against_opp_away,
-                :dk_fantasy_points_per_minute_last_games_against_opp_home,
+                {json.dumps(calculate_fppm(games_player))},
+                '{json.dumps(stats_last_games['dk_fantasy_points_per_minute_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_away['dk_fantasy_points_per_minute_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_home['dk_fantasy_points_per_minute_last_games'])}',
 
-                :opp_dk_fantasy_points_allowed_vs_position_last_games,
-                :opp_dk_fantasy_points_allowed_vs_position_last_games_away,
-                :opp_dk_fantasy_points_allowed_vs_position_last_games_home
+                {json.dumps(opp_dk_fantasy_points_allowed_vs_position_last_game_only)},
+                '{json.dumps(stats_last_games['opp_dk_fantasy_points_allowed_vs_position_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_away['opp_dk_fantasy_points_allowed_vs_position_last_games'])}',
+                '{json.dumps(stats_last_games_against_opp_home['opp_dk_fantasy_points_allowed_vs_position_last_games'])}'
             )
-        ''',
-        game_basketball_reference_id=games_player['game_basketball_reference_id'],
-        player_basketball_reference_id=games_player['player_basketball_reference_id'],
-
-        times_of_last_games=stats_last_games['times_of_games'],
-        times_of_last_games_against_opp_away=stats_last_games_against_opp_away[
-            'times_of_games'],
-        times_of_last_games_against_opp_home=stats_last_games_against_opp_home[
-            'times_of_games'],
-
-        dk_fantasy_points=calculate_fantasy_score(games_player),
-        dk_fantasy_points_last_games=json.dumps(
-            stats_last_games['dk_fantasy_points_last_games']),
-        dk_fantasy_points_last_games_against_opp_away=json.dumps(
-            stats_last_games_against_opp_away['dk_fantasy_points_last_games']),
-        dk_fantasy_points_last_games_against_opp_home=json.dumps(
-            stats_last_games_against_opp_home['dk_fantasy_points_last_games']),
-
-        seconds_played_last_games=json.dumps(
-            stats_last_games['seconds_played_last_games']),
-        seconds_played_last_games_against_opp_away=json.dumps(
-            stats_last_games_against_opp_away['seconds_played_last_games']),
-        seconds_played_last_games_against_opp_home=json.dumps(
-            stats_last_games_against_opp_home['seconds_played_last_games']),
-
-        plus_minus_last_games=json.dumps(
-            stats_last_games['plus_minus_last_games']),
-        plus_minus_last_games_against_opp_away=json.dumps(
-            stats_last_games_against_opp_away['plus_minus_last_games']),
-        plus_minus_last_games_against_opp_home=json.dumps(
-            stats_last_games_against_opp_home['plus_minus_last_games']),
-
-        dk_fantasy_points_per_minute=calculate_fppm(games_player),
-        dk_fantasy_points_per_minute_last_games=json.dumps(
-            stats_last_games['dk_fantasy_points_per_minute_last_games']),
-        dk_fantasy_points_per_minute_last_games_against_opp_away=json.dumps(
-            stats_last_games_against_opp_away['dk_fantasy_points_per_minute_last_games']),
-        dk_fantasy_points_per_minute_last_games_against_opp_home=json.dumps(
-            stats_last_games_against_opp_home['dk_fantasy_points_per_minute_last_games']),
-
-        opp_dk_fantasy_points_allowed_vs_position_last_games=json.dumps(
-            stats_last_games['opp_dk_fantasy_points_allowed_vs_position_last_games']),
-        opp_dk_fantasy_points_allowed_vs_position_last_games_away=json.dumps(
-            stats_last_games_against_opp_away['opp_dk_fantasy_points_allowed_vs_position_last_games']),
-        opp_dk_fantasy_points_allowed_vs_position_last_games_home=json.dumps(
-            stats_last_games_against_opp_home['opp_dk_fantasy_points_allowed_vs_position_last_games'])
+        '''
     )
+
+    services.sql.commit()
 
     # if os.environ.get('DEBUG') == '1':
     #     pprint.pprint(gpc)
 
 
 def get_valid_season_players():
-    player_season_averages = services.pgr.query(
+    player_season_averages = services.sql.execute(
         '''
-            select gp.player_basketball_reference_id, tp.season, avg(gp.seconds_played) as avg_seconds_played, count(gp) as games_played
-            from games_players gp
-            inner join games g
+            select gp.player_basketball_reference_id, tp.season, avg(gp.seconds_played) as avg_seconds_played, count(gp.player_basketball_reference_id) as games_played
+            from games_players as gp
+            inner join games as g
             	on g.basketball_reference_id = gp.game_basketball_reference_id
-            inner join teams_players tp
+            inner join teams_players as tp
             	on tp.player_basketball_reference_id = gp.player_basketball_reference_id
             	and (
             		tp.team_basketball_reference_id = g.home_team_basketball_reference_id
             		or tp.team_basketball_reference_id = g.away_team_basketball_reference_id
             	)
             	and tp.season = g.season
-            group by gp.player_basketball_reference_id, tp.season;
+            group by gp.player_basketball_reference_id, tp.season
         '''
-    ).all(as_dict=True)
+    ).fetchall()
 
     valid_season_players = {}
     for player_season in player_season_averages:
@@ -444,29 +380,29 @@ def get_valid_season_players():
     return valid_season_players
 
 
-def cache_data():
-    print('Caching games_players')
+def cache_data_for_season(season):
+    print(f'Caching games_players for season {season}')
 
     # Only compute new games_players in real mode
     gp_debug_sql = '''
-        where not exists (
-        	select
-        	from games_players_computed gpc
+        and not exists (
+        	select id
+        	from games_players_computed as gpc
         	where gpc.game_basketball_reference_id = gp.game_basketball_reference_id
         	and gpc.player_basketball_reference_id = gp.player_basketball_reference_id
         )
-        order by g.time_of_game asc
+        order by datetime(g.time_of_game) asc
     '''
 
     # Only get a recent James Harden game in debug mode
     if os.environ.get('DEBUG') == '1':
         gp_debug_sql = '''
-          where gp.player_basketball_reference_id = 'hardeja01'
-          order by g.time_of_game desc
+          and gp.player_basketball_reference_id = 'hardeja01'
+          order by datetime(g.time_of_game) asc
           limit 1
         '''
 
-    games_players = services.pgr.query(
+    games_players = services.sql.execute(
         f'''
           select
             gp.game_basketball_reference_id,
@@ -487,16 +423,17 @@ def cache_data():
             g.time_of_game,
             tp.team_basketball_reference_id as player_team_basketball_reference_id,
             tp.position as position,
-            (case (g.home_team_basketball_reference_id = tp.team_basketball_reference_id) when true then g.away_team_basketball_reference_id else g.home_team_basketball_reference_id end) as opp_team_basketball_reference_id
-          from games_players gp
-          inner join games g
+            (case when g.home_team_basketball_reference_id = tp.team_basketball_reference_id then g.away_team_basketball_reference_id else g.home_team_basketball_reference_id end) as opp_team_basketball_reference_id
+          from games_players as gp
+          inner join games as g
             on g.basketball_reference_id = gp.game_basketball_reference_id
-          inner join teams_players tp
+          inner join teams_players as tp
             on tp.player_basketball_reference_id = gp.player_basketball_reference_id
             and tp.season = g.season
+          where g.season = {season}
           {gp_debug_sql}
         '''
-    ).all(as_dict=True)
+    ).fetchall()
 
     print(f"Total games_players: {len(games_players)}")
 
@@ -525,8 +462,20 @@ def cache_data():
             games_players[i]['opp_team_basketball_reference_id'],
             games_players[i]['season'],
             games_players[i]['time_of_game'],
-            position=games_players[i]['position']
+            games_players[i]['position']
         )
+    
+    services.sql.commit()
+
+
+def cache_data():
+    seasons = services.sql.execute(
+        'select distinct season from games order by season asc'
+    ).fetchall()
+    seasons = list(map(lambda r: r['season'], seasons))
+
+    p = multiprocessing.Pool(4)
+    p.map(cache_data_for_season, seasons)
 
 
 # Load Data ##
@@ -550,7 +499,7 @@ def get_data_from_pg(
     if game_basketball_reference_id is not None:
         game_sql = f"and gp.game_basketball_reference_id = '{game_basketball_reference_id}'"
 
-    games_players = services.pgr.query(
+    games_players = services.sqr.query(
         f"""
                 select
                   gp.game_basketball_reference_id,
@@ -586,22 +535,22 @@ def get_data_from_pg(
                   gc.home_dk_fantasy_points_allowed_last_games,
 
                   gpc.dk_fantasy_points
-                from games_players gp
-                inner join players p
+                from games_players as gp
+                inner join players as p
                   on p.basketball_reference_id = gp.player_basketball_reference_id
-                inner join games g
+                inner join games as g
                   on g.basketball_reference_id = gp.game_basketball_reference_id
-                inner join teams_players tp
+                inner join teams_players as tp
                   on tp.player_basketball_reference_id = gp.player_basketball_reference_id
                   and tp.currently_on_this_team = true
-                inner join teams t
+                inner join teams as t
                   on t.basketball_reference_id = tp.team_basketball_reference_id
-                left join games_players_computed gpc
+                left join games_players_computed as gpc
                   on gpc.game_basketball_reference_id = gp.game_basketball_reference_id
                   and gpc.player_basketball_reference_id = gp.player_basketball_reference_id
-                left join games_computed gc
+                left join games_computed as gc
                   on gc.game_basketball_reference_id = g.basketball_reference_id
-                where true
+                where 1
                 and gp.seconds_played > :min_seconds_played_in_game
                 {player_sql}
                 {game_sql}
@@ -613,7 +562,7 @@ def get_data_from_pg(
 
     print(f"Total games_players: {len(games_players)}")
 
-    valid_season_players = get_valid_season_players()
+    valid_season_players = get_valid_season_players(c)
     games_players = filter(
         lambda gp: valid_season_players[f"{gp['season']}_{gp['player_basketball_reference_id']}"], games_players)
 
@@ -664,7 +613,7 @@ def get_mapped_data(
 
 
 def get_game_stats():
-    return services.pgr.query(
+    return services.sqr.query(
         """
             select
               avg(gc.away_dk_fantasy_points_allowed) as away_dk_fantasy_points_allowed_avg,
@@ -674,13 +623,13 @@ def get_game_stats():
               avg(gc.home_dk_fantasy_points_allowed) as home_dk_fantasy_points_allowed_avg,
               min(gc.home_dk_fantasy_points_allowed) as home_dk_fantasy_points_allowed_min,
               max(gc.home_dk_fantasy_points_allowed) as home_dk_fantasy_points_allowed_max
-            from games_computed gc
+            from games_computed as gc
         """
     ).first().as_dict()
 
 
 def get_stats():
-    return services.pgr.query(
+    return services.sqr.query(
         """
             select
               min(g.time_of_game) as time_of_first_game,
@@ -731,17 +680,17 @@ def get_stats():
               min(gpc.dk_fantasy_points) as dk_fantasy_points_min,
               max(gpc.dk_fantasy_points) as dk_fantasy_points_max
 
-            from games_players gp
-            inner join players p
+            from games_players as gp
+            inner join players as p
               on p.basketball_reference_id = gp.player_basketball_reference_id
-            inner join games g
+            inner join games as g
               on g.basketball_reference_id = gp.game_basketball_reference_id
-            inner join teams_players tp
+            inner join teams_players as tp
               on tp.player_basketball_reference_id = gp.player_basketball_reference_id
               and tp.season = g.season
-            inner join teams t
+            inner join teams as t
               on t.basketball_reference_id = tp.team_basketball_reference_id
-            inner join games_players_computed gpc
+            inner join games_players_computed as gpc
               on gpc.game_basketball_reference_id = gp.game_basketball_reference_id
               and gpc.player_basketball_reference_id = gp.player_basketball_reference_id
             where true
@@ -752,13 +701,13 @@ def get_stats():
 
 
 def get_players():
-    valid_season_players = get_valid_season_players()
+    valid_season_players = get_valid_season_players(c)
 
-    rows = services.pgr.query(
+    rows = services.sqr.query(
         '''
           select basketball_reference_id
-          from players p
-          inner join teams_players tp
+          from players as p
+          inner join teams_players as tp
             on tp.player_basketball_reference_id = p.basketball_reference_id
           where tp.season = 2019;
         '''
@@ -786,11 +735,11 @@ def format_player_name(name):
 
 @functools.lru_cache()
 def get_players_by_team_and_formatted_name():
-    players = services.pgr.query(
+    players = services.sqr.query(
         """
             select p.*, tp.team_basketball_reference_id
-            from players p
-            inner join teams_players tp on tp.player_basketball_reference_id = p.basketball_reference_id
+            from players as p
+            inner join teams_players as tp on tp.player_basketball_reference_id = p.basketball_reference_id
             where currently_on_this_team = true
         """
     ).all()
@@ -811,7 +760,7 @@ def get_players_by_team_and_formatted_name():
 def get_teams():
     return list(map(
         lambda r: r.basketball_reference_id,
-        services.pgr.query(
+        services.sqr.query(
             'select distinct basketball_reference_id from teams').all()
     ))
 
@@ -819,36 +768,8 @@ def get_teams():
 def get_positions():
     return list(map(
         lambda r: r.position,
-        services.pgr.query('select distinct position from teams_players where position is not null').all()
+        services.sqr.query('select distinct position from teams_players where position is not null').all()
     ))
-
-
-def standardized_average_of_normal_last_games(num, last_games):
-    non_null_last_games = [game for game in last_games if game is not None]
-
-    if len(non_null_last_games) < 2:
-        return 0
-
-    mean = statistics.mean(non_null_last_games)
-    stdev = statistics.stdev(non_null_last_games, mean)
-    lower_fence = (mean - 1.5 * stdev) or 0
-
-    if (stdev == 0):
-        return mean
-
-    last_normal_games = [
-        game for game in non_null_last_games if game >= lower_fence]
-    last_normal_games = last_normal_games[0:num]
-
-    if (len(last_normal_games) == 0):
-        return 0
-    if (len(last_normal_games) == 1):
-        return last_normal_games[0]
-
-    mean_of_normal_last_games = statistics.mean(last_normal_games)
-    standard_mean_of_normal_last_games = (
-        mean_of_normal_last_games - mean) / stdev
-    return standard_mean_of_normal_last_games or 0
 
 
 def last_games_transform(num, encode_fn, last_games_stats):
@@ -857,7 +778,6 @@ def last_games_transform(num, encode_fn, last_games_stats):
 
     real_last_games = [stat for stat in last_games_stats if stat is not None]
     mean = 0 if len(real_last_games) == 0 else statistics.mean(real_last_games)
-    stdev = 0 if len(real_last_games) == 0 else statistics.stdev(real_last_games, mean)
 
     encoded_last_games = []
     for i in range(num):
@@ -870,10 +790,53 @@ def last_games_transform(num, encode_fn, last_games_stats):
     return np.array(encoded_last_games, dtype=np.float32)
 
 
-def win_loss_ratio(wins, losses):
-    if (wins + losses == 0):
+def avg_last_five_over_avg_all(lgs):
+    if len(lgs) == 0:
+        return None
+
+    non_null_last_games = [d for d in lgs if d not None]
+    mean_all = statistics.mean(non_null_last_games)
+    mean_l5 = statistics.mean(non_null_last_games[0:5])
+    return mean_l5 / mean_alle
+
+
+def days_since_last_game(dts, game_date, enc_f):
+    if len(dt) == 0:
+        return enc_f(30)
+
+    deltas = datetimes_to_deltas(dts)
+    enc_f([(game_date - dt).days for dt in dts if dt not None][0])
+
+
+def sd_last_five_games(ds):
+    if len(ds) == 0:
         return 0
-    return wins / (wins + losses)
+    statistics.stdev([d for d in ds if d is not None][0:5])
+
+
+def z_score_last_games(num, all_last_games, last_games):
+    if last_games is None:
+        return [0 for i in range(num )]
+
+    all_mean = statistics.mean(all_last_games)
+    all_stdev = statistics.stdev(all_last_games, all_mean)
+
+    def encode_fn(val):
+        z_score = (val - all_mean) / all_stdev
+        return 0.1 + ((2 + z_score) / 4)
+
+    real_last_games = [stat for stat in last_games_stats if stat is not None]
+    mean = 0 if len(real_last_games) == 0 else statistics.mean(real_last_games)
+
+    encoded_last_games = []
+    for i in range(num):
+        if i > len(real_last_games) - 1:
+            encoded_last_games[i] = encode_fn(mean)
+            continue
+ 
+        encoded_last_games[i] = encode_fn(real_last_games[i])
+
+    return np.array(encoded_last_games, dtype=np.float32)
 
 
 class Mappers:
@@ -962,6 +925,7 @@ class Mappers:
         self.positions_enc = LabelBinarizer(neg_label=0.1, pos_label=0.9)
         self.positions_enc.fit(get_positions())
 
+
     def datum_to_x(self, d):
         return np.concatenate((
             np.array([
@@ -973,17 +937,9 @@ class Mappers:
                 0.9 if d['starter'] else 0.1,
                 self.year_of_game_enc.transform(d['year_of_game']),
                 self.month_of_game_enc.transform(d['month_of_game']),
-                self.day_of_game_enc.transform(d['day_of_game']),
-
-                # avg_minutes_played_last_five_games_played_in / avg_minutes_played_over_season
-                # days_since_last_game_against_opp_home
-                # days_since_last_game_against_opp_away
-                # fantasy_points_last_five_games_sd
-                # fantasy_points_last_five_games_z_score
-                # opponent_team_fantasy_points_allowed_against_position_z_score_last_5_games
-
+                self.day_of_game_enc.transform(d['day_of_game'])
             ], dtype=np.float32),
-
+            
             last_games_transform(
                 5, self.dk_fantasy_points_enc.transform, d['dk_fantasy_points_last_games']),
             last_games_transform(
@@ -1019,6 +975,18 @@ class Mappers:
 
             self.positions_enc.transform([d['position']]).flatten(),
 
+            # Odd features
+
+            np.array([
+                avg_last_five_over_avg_all(d['seconds_played_last_games']) or self.seconds_played_enc(self.stats['seconds_played_avg']),
+                days_since_last_game(d['times_of_last_games_against_opp_away'], d['time_of_game'], self.days_since_last_game_against_opp_enc.transform),
+                days_since_last_game(d['times_of_last_games_against_opp_home'], d['time_of_game'], self.days_since_last_game_against_opp_enc.transform),
+                self.dk_fantasy_points_enc.transform(sd_last_five_games(d['dk_fantasy_points_last_games']))
+            ]),
+
+            z_score_last_games(5, d['dk_fantasy_points_last_games'], d['dk_fantasy_points_last_games']),
+            z_score_last_games(5, d['opp_dk_fantasy_points_allowed_vs_position_last_games'], d['opp_dk_fantasy_points_allowed_vs_position_last_games'])
+
             # self.players_enc.transform([set(player_team_starters)]).flatten(),
             # self.players_enc.transform([set(player_team_starters)]).flatten(),
             # self.players_enc.transform([[d['player_basketball_reference_id']]]).flatten()
@@ -1028,13 +996,30 @@ class Mappers:
         return [d['dk_fantasy_points']]
 
     def datum_to_sw(self, d):
-        value_through_range = d['time_of_game'].timestamp(
-        ) - self.stats['time_of_first_game'].timestamp()
-        the_range = self.stats['time_of_most_recent_game'].timestamp(
-        ) - self.stats['time_of_first_game'].timestamp()
-        x = value_through_range / the_range
-        # https://www.desmos.com/calculator/irzszceutx
-        return 1 + ((10 - 1) / (1 + 10 ** ((0.95 - x) * 15))) + x ** 2
+        FIRST_SEASON = 1984
+        LATEST_SEASON = 2019
+        SCALE = 10
+        ADD_IF_WITHIN_TWO_WEEKS = 10
+        
+        season = d['time_of_game'].year
+        if d['time_of_game'].month > 7:
+            season += 1
+
+        season = (LATEST_SEASON - season) / (LATEST_SEASON - FIRST_SEASON)
+        season *= SCALE
+        
+        # TODO Get actual end of season
+        start_of_season = datetime.datetime(season - 1, 10, 15)
+        end_of_season = datetime.datetime(season, 7, 1)
+
+        through_season = (d['time_of_game'] - start_of_season).days / (end_of_season - start_of_season).days
+
+        val = season + through_season
+
+        if (datetime.datetime.now() - d['time_of_game']).days <= 14:
+            val += ADD_IF_WITHIN_TWO_WEEKS
+
+        return val
 
     def y_to_datum(self, y):
         return {'dk_fantasy_points': round(y[0], 2)}
