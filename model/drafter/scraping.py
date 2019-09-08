@@ -41,7 +41,7 @@ def parse_salary_file():
     parsed_data = []
 
     for i, row in df.iterrows():
-        in_db_player = services.sqw.query("""
+        in_db_player = services.sql.execute(f"""
             select
               p.basketball_reference_id,
               p.birth_country,
@@ -52,9 +52,9 @@ def parse_salary_file():
             inner join teams_players tp
               on tp.player_basketball_reference_id = p.basketball_reference_id
               and tp.season = '2019'
-            where p.name = :name
-            and tp.team_basketball_reference_id = :team
-        """, name=row['Name'], team=row['Player Team']).first(as_dict=True)
+            where p.name = '{row['Name'].replace("'", "''")}'
+            and tp.team_basketball_reference_id = '{row['Player Team']}'
+        """).fetchone()
 
         if not in_db_player:
             continue

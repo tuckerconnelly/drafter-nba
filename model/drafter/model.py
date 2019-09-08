@@ -35,7 +35,7 @@ MODEL_DIR = 'tmp/models'
 
 MAX_SAMPLES = None
 BATCH_SIZE = 128
-EPOCHS = 3 if os.environ.get('FINAL', False) else 30
+EPOCHS = 3 if os.environ.get('FINAL', False) else 5
 PLAYER_LOSS_PLAYER_LIMIT = None
 PLAYER_MIN_NUMBER_GAMES_PLAYED=41
 # PLAYER_BATCH_SIZE=64
@@ -84,9 +84,9 @@ def fit(final_model=False):
 
     mapped_data = data.get_mapped_data(limit=MAX_SAMPLES)
     x_train, x_test, y_train, y_test, sw_train, sw_test = train_test_split(
-        mapped_data['x'], mapped_data['y'], mapped_data['sw'], test_size=0.2, random_state=0)
+        mapped_data['x'], mapped_data['y'], mapped_data['sw'], test_size=0.1, random_state=0)
     x_train, x_val, y_train, y_val, sw_train, sw_val = train_test_split(
-        x_train, y_train, sw_train, test_size=0.2, random_state=0)
+        x_train, y_train, sw_train, test_size=0.1, random_state=0)
     if final_model:
         x_train = mapped_data['x']
         y_train = mapped_data['y']

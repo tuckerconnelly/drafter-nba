@@ -40,6 +40,14 @@ cache-data-debug:
 cache-data:
 	pipenv run python3 drafter/data.py cache-data
 
+cache-features-debug:
+	DEBUG=1 pipenv run python3 drafter/data.py cache-features
+
+cache-features:
+	pipenv run python3 drafter/data.py cache-features
+
+get-mapped-data-debug:
+	DEBUG=1 pipenv run python3 drafter/data.py get-mapped-data-debug
 
 # Fitting
 

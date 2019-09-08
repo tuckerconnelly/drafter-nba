@@ -3,6 +3,7 @@ node_modules
 .envrc
 .env.test
 tmp
+.DS_Store
 
 .pytest_cache
 

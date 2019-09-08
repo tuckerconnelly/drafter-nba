@@ -36,14 +36,12 @@ if os.environ.get('DEBUG') is not None:
 def make_model():
     # From http://danielhnyk.cz/how-to-use-xgboost-in-python/
     params = {
-        'colsample_bytree': 1,
-        'gamma': 0.4,
-        'learning_rate': 0.1,
-        'max_depth': 42,
-        'min_child_weight': 32,
-        'n_estimators': 50,
-        'reg_alpha': 100,
-        'subsample': 1
+        # 'learning_rate': 0.1,
+        'max_depth': 10,
+        # 'reg_alpha': 100,
+        # 'min_child_weight': 32,
+        # 'colsample_bytree': 1,
+        # 'gamma': 0.4
     }
 
     regressor = xgb.XGBRegressor(
@@ -65,9 +63,9 @@ def fit(final_model=False):
     mapped_data = data.get_mapped_data(limit=MAX_SAMPLES)
 
     x_train, x_test, y_train, y_test, sw_train, sw_test = train_test_split(
-        mapped_data['x'], mapped_data['y'], mapped_data['sw'], test_size=0.2, random_state=0)
+        mapped_data['x'], mapped_data['y'], mapped_data['sw'], test_size=0.1, random_state=0)
     x_train, x_val, y_train, y_val, sw_train, sw_val = train_test_split(
-        x_train, y_train, sw_train, test_size=0.2, random_state=0)
+        x_train, y_train, sw_train, test_size=0.1, random_state=0)
 
     regressor = make_model()
 
